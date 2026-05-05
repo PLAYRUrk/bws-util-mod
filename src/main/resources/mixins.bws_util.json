@@ -1,0 +1,10 @@
+{
+  "required": false,
+  "package": "ru.pleeey.bwsutil.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "minVersion": "0.8",
+  "client": ["GuiRendererMixin", "GuiMixin", "GameRendererMixin"],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

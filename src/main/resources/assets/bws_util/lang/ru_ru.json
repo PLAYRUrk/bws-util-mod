@@ -1,0 +1,9 @@
+{
+  "key.categories.bws_util": "BWS Util",
+  "key.bws_util.open_config": "Открыть настройки прицела",
+  "key.bws_util.zero_increase": "Увеличить дист. пристрелки",
+  "key.bws_util.zero_decrease": "Уменьшить дист. пристрелки",
+  "key.bws_util.mode_toggle": "Переключить режим прицела (Ручной/Авто)",
+  "key.bws_util.scope_toggle": "Включить/выключить прицел",
+  "key.bws_util.bedwars_toggle": "Вкл/выкл тактический оверлей BedWars"
+}

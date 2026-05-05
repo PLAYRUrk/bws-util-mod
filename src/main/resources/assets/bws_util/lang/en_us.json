@@ -1,0 +1,9 @@
+{
+  "key.categories.bws_util": "BWS Util",
+  "key.bws_util.open_config": "Open Scope Settings",
+  "key.bws_util.zero_increase": "Increase Zero Distance",
+  "key.bws_util.zero_decrease": "Decrease Zero Distance",
+  "key.bws_util.mode_toggle": "Toggle Scope Mode (Manual/Auto)",
+  "key.bws_util.scope_toggle": "Toggle Scope On/Off",
+  "key.bws_util.bedwars_toggle": "Toggle BedWars Tactical Overlay"
+}

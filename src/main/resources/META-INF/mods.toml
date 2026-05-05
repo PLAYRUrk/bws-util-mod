@@ -1,0 +1,32 @@
+modLoader = "javafml"
+loaderVersion = "[61,)"
+license = "MIT"
+
+[[mixins]]
+config = "mixins.bws_util.json"
+
+issueTrackerURL = "https://github.com/example/bws-util-mod/issues"
+
+[[mods]]
+    modId = "bws_util"
+    version = "${file.jarVersion}"
+    displayName = "BWS Util"
+    authors = "Pleeey"
+    logoFile = ""
+    description = '''
+Bow scope with zeroing, BedWars tactical overlay, and utility HUD features.
+    '''
+
+[[dependencies.bws_util]]
+    modId = "forge"
+    mandatory = true
+    versionRange = "[61,)"
+    ordering = "NONE"
+    side = "BOTH"
+
+[[dependencies.bws_util]]
+    modId = "minecraft"
+    mandatory = true
+    versionRange = "[1.21.11,1.22)"
+    ordering = "NONE"
+    side = "BOTH"

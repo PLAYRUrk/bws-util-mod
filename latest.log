@@ -1,0 +1,286 @@
+[04May2026 18:58:12.833] [main/INFO] [cpw.mods.modlauncher.Launcher/MODLAUNCHER]: ModLauncher running: args [--username, Pleeey, --version, Forge 1.21.11, --gameDir, C:\Users\egorb\AppData\Roaming\.minecraft, --assetsDir, C:\Users\egorb\AppData\Roaming\.minecraft\assets, --assetIndex, 29, --uuid, 883cef6f124032e9b0f933f71fba71d9, --accessToken, **********, --clientId, , --xuid, , --versionType, modified, --width, 925, --height, 530, --launchTarget, forge_client]
+[04May2026 18:58:12.836] [main/INFO] [cpw.mods.modlauncher.Launcher/MODLAUNCHER]: JVM identified as Microsoft OpenJDK 64-Bit Server VM 21.0.7+6-LTS
+[04May2026 18:58:12.836] [main/INFO] [cpw.mods.modlauncher.Launcher/MODLAUNCHER]: ModLauncher 10.2.4 starting: java version 21.0.7 by Microsoft; OS Windows 10 arch amd64 version 10.0
+[04May2026 18:58:12.979] [main/INFO] [net.minecraftforge.fml.loading.ImmediateWindowHandler/]: Loading ImmediateWindowProvider fmlearlywindow
+[04May2026 18:58:13.112] [main/INFO] [EARLYDISPLAY/]: Trying GL version 4.6
+[04May2026 18:58:13.268] [main/INFO] [EARLYDISPLAY/]: Requested GL version 4.6 got version 4.6
+[04May2026 18:58:13.300] [main/INFO] [optifine.OptiFineTransformationService/]: OptiFineTransformationService.onLoad
+[04May2026 18:58:13.301] [main/INFO] [optifine.OptiFineTransformationService/]: OptiFine ZIP file URL: jar:file:///C:/Users/egorb/AppData/Roaming/.minecraft/mods/OptiFine_1.21.11_HD_U_J9.jar!/
+[04May2026 18:58:13.303] [main/INFO] [optifine.OptiFineTransformationService/]: OptiFine ZIP file: C:\Users\egorb\AppData\Roaming\.minecraft\mods\OptiFine_1.21.11_HD_U_J9.jar
+[04May2026 18:58:13.304] [main/INFO] [optifine.OptiFineTransformer/]: Target.PRE_CLASS is available
+[04May2026 18:58:13.720] [EarlyDisplay/INFO] [EARLYDISPLAY/]: GL info: NVIDIA GeForce RTX 4060/PCIe/SSE2 GL version 4.6.0 NVIDIA 581.57, NVIDIA Corporation
+[04May2026 18:58:13.755] [main/INFO] [optifine.OptiFineTransformer/]: Forge JAR URL: file:/C:/Users/egorb/AppData/Roaming/.minecraft/libraries/net/minecraftforge/forge/1.21.11-61.1.5/forge-1.21.11-61.1.5-client.jar
+[04May2026 18:58:13.838] [main/INFO] [mixin/]: SpongePowered MIXIN Subsystem Version=0.8.7 Source=jar:file:///C:/Users/egorb/AppData/Roaming/.minecraft/libraries/org/spongepowered/mixin/0.8.7/mixin-0.8.7.jar!/ Service=ModLauncher Env=CLIENT
+[04May2026 18:58:13.846] [main/INFO] [optifine.OptiFineTransformationService/]: OptiFineTransformationService.initialize
+[04May2026 18:58:14.192] [main/INFO] [net.minecraftforge.fml.loading.moddiscovery.JarInJarDependencyLocator/]: No dependencies to load found. Skipping!
+[04May2026 18:58:14.296] [main/INFO] [optifine.OptiFineTransformationService/]: OptiFineTransformationService.transformers
+[04May2026 18:58:14.303] [main/INFO] [optifine.OptiFineTransformer/]: Targets: 568
+[04May2026 18:58:14.406] [main/INFO] [cpw.mods.modlauncher.LaunchServiceHandler/MODLAUNCHER]: Launching target 'forge_client' with arguments [--version, Forge 1.21.11, --gameDir, C:\Users\egorb\AppData\Roaming\.minecraft, --assetsDir, C:\Users\egorb\AppData\Roaming\.minecraft\assets, --uuid, 883cef6f124032e9b0f933f71fba71d9, --username, Pleeey, --assetIndex, 29, --accessToken, **********, --clientId, , --xuid, , --versionType, modified, --width, 925, --height, 530]
+[04May2026 18:58:15.550] [Datafixer Bootstrap/INFO] [com.mojang.datafixers.DataFixerBuilder/]: 287 Datafixer optimizations took 448 milliseconds
+[04May2026 18:58:19.650] [Render thread/INFO] [com.mojang.authlib.yggdrasil.YggdrasilAuthenticationService/]: Environment: Environment[sessionHost=https://sessionserver.mojang.com, servicesHost=https://api.minecraftservices.com, profilesHost=https://api.mojang.com, name=PROD]
+[04May2026 18:58:19.676] [Render thread/INFO] [net.minecraft.client.Minecraft/]: Setting user: Pleeey
+[04May2026 18:58:19.857] [Render thread/INFO] [net.optifine.Log/]: [OptiFine] (Reflector) Class not present: net.minecraft.launchwrapper.Launch
+[04May2026 18:58:19.860] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Forge version: 61.1.5
+[04May2026 18:58:19.860] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Forge version above 47.0.3, antialiasing disabled
+[04May2026 18:58:19.897] [Render thread/INFO] [net.minecraft.client.Minecraft/]: Backend library: LWJGL version 3.3.3+5
+[04May2026 18:58:19.972] [Render thread/WARN] [net.optifine.Config/]: [OptiFine] (Reflector) java.lang.ClassNotFoundException: sun.misc.SharedSecrets
+[04May2026 18:58:19.972] [Render thread/WARN] [net.optifine.Config/]: [OptiFine] (Reflector) java.lang.ClassNotFoundException: jdk.internal.misc.SharedSecrets
+[04May2026 18:58:19.973] [Render thread/WARN] [net.optifine.Config/]: [OptiFine] (Reflector) java.lang.ClassNotFoundException: sun.misc.VM
+[04May2026 18:58:19.973] [Render thread/WARN] [net.optifine.Config/]: [OptiFine] (Reflector) java.lang.reflect.InaccessibleObjectException: Unable to make public static long jdk.internal.misc.VM.maxDirectMemory() accessible: module java.base does not "exports jdk.internal.misc" to module srg
+[04May2026 18:58:20.102] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] 
+[04May2026 18:58:20.102] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] OptiFine_1.21.11_HD_U_J9
+[04May2026 18:58:20.105] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Build: 20260205-190839
+[04May2026 18:58:20.105] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] OS: Windows 10 (amd64) version 10.0
+[04May2026 18:58:20.106] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Java: 21.0.7, Microsoft
+[04May2026 18:58:20.106] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] VM: OpenJDK 64-Bit Server VM (mixed mode), Microsoft
+[04May2026 18:58:20.106] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] LWJGL: 3.4.0 Win32 WGL Null EGL OSMesa VisualC DLL
+[04May2026 18:58:20.106] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] OpenGL: NVIDIA GeForce RTX 4060/PCIe/SSE2, version 4.6.0 NVIDIA 581.57, NVIDIA Corporation
+[04May2026 18:58:20.108] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] OpenGL Version: 4.6.0
+[04May2026 18:58:20.108] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Maximum texture size: 32768x32768
+[04May2026 18:58:20.109] [VersionCheck/INFO] [net.optifine.Config/]: [OptiFine] Checking for new version
+[04May2026 18:58:20.109] [Render thread/INFO] [net.optifine.shaders.SMCLog/]: [Shaders] OpenGL Version: 4.6.0 NVIDIA 581.57
+[04May2026 18:58:20.109] [Render thread/INFO] [net.optifine.shaders.SMCLog/]: [Shaders] Vendor:  NVIDIA Corporation
+[04May2026 18:58:20.109] [Render thread/INFO] [net.optifine.shaders.SMCLog/]: [Shaders] Renderer: NVIDIA GeForce RTX 4060/PCIe/SSE2
+[04May2026 18:58:20.110] [Render thread/INFO] [net.optifine.shaders.SMCLog/]: [Shaders] Capabilities:  2.0  2.1  3.0  3.2  4.0 
+[04May2026 18:58:20.117] [Render thread/INFO] [net.optifine.shaders.SMCLog/]: [Shaders] GL_MAX_DRAW_BUFFERS: 8
+[04May2026 18:58:20.117] [Render thread/INFO] [net.optifine.shaders.SMCLog/]: [Shaders] GL_MAX_COLOR_ATTACHMENTS: 8
+[04May2026 18:58:20.118] [Render thread/INFO] [net.optifine.shaders.SMCLog/]: [Shaders] GL_MAX_TEXTURE_IMAGE_UNITS: 32
+[04May2026 18:58:20.118] [Render thread/INFO] [net.optifine.shaders.SMCLog/]: [Shaders] Load shaders configuration.
+[04May2026 18:58:20.120] [Render thread/INFO] [net.optifine.shaders.SMCLog/]: [Shaders] No shaderpack loaded.
+[04May2026 18:58:20.128] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] [Shaders] Delayed loading of item mappings after resources are loaded
+[04May2026 18:58:20.128] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] [Shaders] Delayed loading of entity mappings after resources are loaded
+[04May2026 18:58:20.128] [Render thread/INFO] [net.minecraft.client.Minecraft/]: Using optional rendering extensions: GL_ARB_buffer_storage, GL_KHR_debug, GL_ARB_vertex_attrib_binding, GL_ARB_direct_state_access, GL_EXT_texture_filter_anisotropic
+[04May2026 18:58:20.195] [modloading-worker-0/INFO] [net.minecraftforge.common.ForgeMod/FORGEMOD]: Forge mod loading, version 61.1.5, for MC 1.21.11 with MCP 20251223.124241
+[04May2026 18:58:20.195] [modloading-worker-0/INFO] [net.minecraftforge.common.MinecraftForge/FORGE]: MinecraftForge v61.1.5 Initialized
+[04May2026 18:58:20.211] [modloading-worker-0/INFO] [net.minecraftforge.common.ForgeMod/FORGEMOD]: Opening jdk.naming.dns/com.sun.jndi.dns to java.naming
+[04May2026 18:58:20.675] [VersionCheck/INFO] [net.optifine.Config/]: [OptiFine] Version found: J9
+[04May2026 18:58:20.805] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureManager/]: Keep logo texture for ForgeLoadingOverlay: 11, 512x512, DT, fbo: -1
+[04May2026 18:58:20.827] [Render thread/INFO] [net.minecraft.server.packs.resources.ReloadableResourceManager/]: Reloading ResourceManager: mod_resources, vanilla, file/Faithful 64x - December 2025 Release.zip
+[04May2026 18:58:20.840] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] *** Reloading resources ***
+[04May2026 18:58:20.866] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] *** Reloading textures ***
+[04May2026 18:58:20.891] [Worker-Main-6/WARN] [net.optifine.Config/]: [OptiFine] Resource not found: minecraft:shaders/post/fxaa_of_2x.json
+[04May2026 18:58:20.893] [Worker-Main-6/WARN] [net.optifine.Config/]: [OptiFine] Resource not found: minecraft:shaders/post/fxaa_of_4x.json
+[04May2026 18:58:20.905] [Worker-Main-13/INFO] [net.optifine.Config/]: [OptiFine] Pre-stitch: minecraft:textures/atlas/beds.png
+[04May2026 18:58:20.905] [Worker-Main-7/INFO] [net.optifine.Config/]: [OptiFine] Pre-stitch: minecraft:textures/atlas/paintings.png
+[04May2026 18:58:20.905] [Worker-Main-13/INFO] [net.optifine.Config/]: [OptiFine] Multitexture: false
+[04May2026 18:58:20.905] [Worker-Main-7/INFO] [net.optifine.Config/]: [OptiFine] Multitexture: false
+[04May2026 18:58:20.906] [Worker-Main-10/INFO] [net.optifine.Config/]: [OptiFine] Pre-stitch: minecraft:textures/atlas/chest.png
+[04May2026 18:58:20.906] [Worker-Main-10/INFO] [net.optifine.Config/]: [OptiFine] Multitexture: false
+[04May2026 18:58:20.907] [Worker-Main-11/INFO] [net.optifine.Config/]: [OptiFine] Pre-stitch: minecraft:textures/atlas/celestials.png
+[04May2026 18:58:20.907] [Worker-Main-11/INFO] [net.optifine.Config/]: [OptiFine] Multitexture: false
+[04May2026 18:58:20.908] [Worker-Main-8/INFO] [net.optifine.Config/]: [OptiFine] Pre-stitch: minecraft:textures/atlas/shield_patterns.png
+[04May2026 18:58:20.908] [Worker-Main-8/INFO] [net.optifine.Config/]: [OptiFine] Multitexture: false
+[04May2026 18:58:20.909] [Worker-Main-12/INFO] [net.optifine.Config/]: [OptiFine] Pre-stitch: minecraft:textures/atlas/banner_patterns.png
+[04May2026 18:58:20.909] [Worker-Main-12/INFO] [net.optifine.Config/]: [OptiFine] Multitexture: false
+[04May2026 18:58:20.910] [Worker-Main-5/INFO] [net.optifine.Config/]: [OptiFine] Pre-stitch: minecraft:textures/atlas/decorated_pot.png
+[04May2026 18:58:20.910] [Worker-Main-5/INFO] [net.optifine.Config/]: [OptiFine] Multitexture: false
+[04May2026 18:58:20.914] [Worker-Main-3/INFO] [net.optifine.Config/]: [OptiFine] Pre-stitch: minecraft:textures/atlas/particles.png
+[04May2026 18:58:20.914] [Worker-Main-3/INFO] [net.optifine.Config/]: [OptiFine] Multitexture: false
+[04May2026 18:58:20.916] [Worker-Main-14/INFO] [net.optifine.Config/]: [OptiFine] Pre-stitch: minecraft:textures/atlas/items.png
+[04May2026 18:58:20.916] [Worker-Main-14/INFO] [net.optifine.Config/]: [OptiFine] Multitexture: false
+[04May2026 18:58:20.916] [Worker-Main-14/INFO] [net.optifine.Config/]: [OptiFine] Register item sprites
+[04May2026 18:58:20.917] [Worker-Main-4/INFO] [net.optifine.Config/]: [OptiFine] Pre-stitch: minecraft:textures/atlas/armor_trims.png
+[04May2026 18:58:20.917] [Worker-Main-4/INFO] [net.optifine.Config/]: [OptiFine] Multitexture: false
+[04May2026 18:58:20.918] [Worker-Main-15/INFO] [net.optifine.Config/]: [OptiFine] Pre-stitch: minecraft:textures/atlas/gui.png
+[04May2026 18:58:20.918] [Worker-Main-15/INFO] [net.optifine.Config/]: [OptiFine] Multitexture: false
+[04May2026 18:58:20.927] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] Pre-stitch: minecraft:textures/atlas/blocks.png
+[04May2026 18:58:20.927] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] Multitexture: false
+[04May2026 18:58:20.927] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] Register block sprites
+[04May2026 18:58:20.932] [Download-2/ERROR] [net.minecraft.client.Minecraft/]: Failed to fetch user properties
+com.mojang.authlib.exceptions.InvalidCredentialsException: Status: 401
+	at SECURE-BOOTSTRAP/authlib@7.0.61/com.mojang.authlib.exceptions.MinecraftClientHttpException.toAuthenticationException(MinecraftClientHttpException.java:59) ~[authlib-7.0.61.jar!/:?]
+	at SECURE-BOOTSTRAP/authlib@7.0.61/com.mojang.authlib.yggdrasil.YggdrasilUserApiService.fetchProperties(YggdrasilUserApiService.java:150) ~[authlib-7.0.61.jar!/:?]
+	at TRANSFORMER/minecraft@1.21.11/net.minecraft.client.Minecraft.lambda$new$1(Minecraft.java:427) ~[forge-1.21.11-61.1.5-client.jar!/:?]
+	at java.base/java.util.concurrent.CompletableFuture$AsyncSupply.run(CompletableFuture.java:1768) ~[?:?]
+	at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1144) ~[?:?]
+	at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642) ~[?:?]
+	at java.base/java.lang.Thread.run(Thread.java:1583) [?:?]
+Caused by: com.mojang.authlib.exceptions.MinecraftClientHttpException: Status: 401
+	at SECURE-BOOTSTRAP/authlib@7.0.61/com.mojang.authlib.minecraft.client.MinecraftClient.readInputStream(MinecraftClient.java:103) ~[authlib-7.0.61.jar!/:?]
+	at SECURE-BOOTSTRAP/authlib@7.0.61/com.mojang.authlib.minecraft.client.MinecraftClient.get(MinecraftClient.java:56) ~[authlib-7.0.61.jar!/:?]
+	at SECURE-BOOTSTRAP/authlib@7.0.61/com.mojang.authlib.yggdrasil.YggdrasilUserApiService.fetchProperties(YggdrasilUserApiService.java:121) ~[authlib-7.0.61.jar!/:?]
+	... 5 more
+[04May2026 18:58:20.953] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/bookshelf/bookshelf.properties
+[04May2026 18:58:20.989] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/black_stained_glass/glass.properties
+[04May2026 18:58:20.996] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/black_stained_glass/glass_pane.properties
+[04May2026 18:58:21.002] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/blue_stained_glass/glass.properties
+[04May2026 18:58:21.008] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/blue_stained_glass/glass_pane.properties
+[04May2026 18:58:21.011] [Worker-Main-2/INFO] [net.optifine.Config/]: [OptiFine] Pre-stitch: minecraft:textures/atlas/map_decorations.png
+[04May2026 18:58:21.012] [Worker-Main-2/INFO] [net.optifine.Config/]: [OptiFine] Multitexture: false
+[04May2026 18:58:21.016] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/brown_stained_glass/glass.properties
+[04May2026 18:58:21.022] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/brown_stained_glass/glass_pane.properties
+[04May2026 18:58:21.028] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/cyan_stained_glass/glass.properties
+[04May2026 18:58:21.034] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/cyan_stained_glass/glass_pane.properties
+[04May2026 18:58:21.035] [Worker-Main-11/INFO] [net.optifine.Config/]: [OptiFine] Pre-stitch: minecraft:textures/atlas/signs.png
+[04May2026 18:58:21.035] [Worker-Main-11/INFO] [net.optifine.Config/]: [OptiFine] Multitexture: false
+[04May2026 18:58:21.039] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/glass/glass.properties
+[04May2026 18:58:21.040] [Worker-Main-2/INFO] [net.optifine.Config/]: [OptiFine] Pre-stitch: minecraft:textures/atlas/shulker_boxes.png
+[04May2026 18:58:21.040] [Worker-Main-2/INFO] [net.optifine.Config/]: [OptiFine] Multitexture: false
+[04May2026 18:58:21.047] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/glass/glass_pane.properties
+[04May2026 18:58:21.053] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/gray_stained_glass/glass.properties
+[04May2026 18:58:21.058] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/gray_stained_glass/glass_pane.properties
+[04May2026 18:58:21.063] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/green_stained_glass/glass.properties
+[04May2026 18:58:21.067] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/green_stained_glass/glass_pane.properties
+[04May2026 18:58:21.072] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/light_blue_stained_glass/glass.properties
+[04May2026 18:58:21.077] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/light_blue_stained_glass/glass_pane.properties
+[04May2026 18:58:21.086] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/light_gray_stained_glass/glass.properties
+[04May2026 18:58:21.089] [Worker-Main-15/INFO] [net.optifine.Config/]: [OptiFine] Scaled non power of 2: minecraft:widget/scroller_background, 6 -> 12
+[04May2026 18:58:21.092] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/light_gray_stained_glass/glass_pane.properties
+[04May2026 18:58:21.096] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/lime_stained_glass/glass.properties
+[04May2026 18:58:21.103] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/lime_stained_glass/glass_pane.properties
+[04May2026 18:58:21.110] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/magenta_stained_glass/glass.properties
+[04May2026 18:58:21.118] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/magenta_stained_glass/glass_pane.properties
+[04May2026 18:58:21.123] [Render thread/INFO] [net.optifine.reflect.Reflector/]: [OptiFine] *** Reflector Forge ***
+[04May2026 18:58:21.124] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/orange_stained_glass/glass.properties
+[04May2026 18:58:21.129] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/orange_stained_glass/glass_pane.properties
+[04May2026 18:58:21.134] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/pink_stained_glass/glass.properties
+[04May2026 18:58:21.138] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/pink_stained_glass/glass_pane.properties
+[04May2026 18:58:21.142] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/purple_stained_glass/glass.properties
+[04May2026 18:58:21.146] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/purple_stained_glass/glass_pane.properties
+[04May2026 18:58:21.152] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/red_stained_glass/glass.properties
+[04May2026 18:58:21.158] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/red_stained_glass/glass_pane.properties
+[04May2026 18:58:21.162] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/tinted_glass/tinted_glass.properties
+[04May2026 18:58:21.166] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/white_stained_glass/glass.properties
+[04May2026 18:58:21.171] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/white_stained_glass/glass_pane.properties
+[04May2026 18:58:21.175] [Worker-Main-6/INFO] [net.minecraft.client.gui.font.providers.UnihexProvider/]: Found unifont_all_no_pua-17.0.01.hex, loading
+[04May2026 18:58:21.177] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/yellow_stained_glass/glass.properties
+[04May2026 18:58:21.181] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/glass/yellow_stained_glass/glass_pane.properties
+[04May2026 18:58:21.185] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/red_sandstone/red_sandstone.properties
+[04May2026 18:58:21.187] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] ConnectedTextures: optifine/ctm/sandstone/sandstone.properties
+[04May2026 18:58:21.188] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] Multipass connected textures: false
+[04May2026 18:58:21.197] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] Multipass connected textures: false
+[04May2026 18:58:21.201] [Worker-Main-7/INFO] [net.minecraft.client.gui.font.providers.UnihexProvider/]: Found unifont_pua-17.0.01.hex, loading
+[04May2026 18:58:21.201] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] Multipass connected textures: false
+[04May2026 18:58:21.204] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] BetterGrass: Parsing default configuration optifine/bettergrass.properties
+[04May2026 18:58:21.365] [Render thread/INFO] [net.optifine.reflect.Reflector/]: [OptiFine] *** Reflector Vanilla ***
+[04May2026 18:58:21.469] [Worker-Main-6/INFO] [net.minecraft.client.gui.font.providers.UnihexProvider/]: Found unifont_jp_patch-17.0.01.hex, loading
+[04May2026 18:58:21.673] [Forge Version Check/INFO] [net.minecraftforge.fml.VersionChecker/]: [forge] Starting version check at https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json
+[04May2026 18:58:21.682] [Download-3/INFO] [com.mojang.realmsclient.client.RealmsClient/]: Could not authorize you against Realms server: java.lang.RuntimeException: Failed to parse into SignedJWT: 883cef6f124032e9b0f933f71fba71d9
+[04May2026 18:58:21.686] [Download-3/ERROR] [com.mojang.realmsclient.client.RealmsClient/]: Failed to fetch Realms feature flags
+com.mojang.realmsclient.exception.RealmsServiceException: Realms authentication error with message 'java.lang.RuntimeException: Failed to parse into SignedJWT: 883cef6f124032e9b0f933f71fba71d9'
+	at TRANSFORMER/minecraft@1.21.11/com.mojang.realmsclient.client.RealmsClient.execute(RealmsClient.java:526) ~[forge-1.21.11-61.1.5-client.jar!/:?]
+	at TRANSFORMER/minecraft@1.21.11/com.mojang.realmsclient.client.RealmsClient.fetchFeatureFlags(RealmsClient.java:186) ~[forge-1.21.11-61.1.5-client.jar!/:?]
+	at java.base/java.util.concurrent.CompletableFuture$AsyncSupply.run(CompletableFuture.java:1768) ~[?:?]
+	at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1144) ~[?:?]
+	at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642) ~[?:?]
+	at java.base/java.lang.Thread.run(Thread.java:1583) [?:?]
+[04May2026 18:58:21.940] [Worker-Main-13/INFO] [net.optifine.Config/]: [OptiFine] CustomItems: Collecting model sprites
+[04May2026 18:58:22.033] [Worker-Main-14/INFO] [net.optifine.Config/]: [OptiFine] CustomItems: Registering sprites
+[04May2026 18:58:23.078] [Forge Version Check/INFO] [net.minecraftforge.fml.VersionChecker/]: [forge] Found status: AHEAD Current: 61.1.5 Target: null
+[04May2026 18:58:23.235] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] Sprite size: 64
+[04May2026 18:58:23.235] [Worker-Main-9/INFO] [net.optifine.Config/]: [OptiFine] Mipmap levels: 6
+[04May2026 18:58:23.343] [Worker-Main-3/INFO] [net.optifine.Config/]: [OptiFine] Scaled too small texture: minecraft:missingno, 16 -> 64
+[04May2026 18:58:23.344] [Worker-Main-3/INFO] [net.optifine.Config/]: [OptiFine] Scaled too small texture: forge:block/milk_flowing, 32 -> 64
+[04May2026 18:58:23.355] [Worker-Main-3/INFO] [net.optifine.Config/]: [OptiFine] Scaled too small texture: minecraft:block/debug, 16 -> 64
+[04May2026 18:58:23.355] [Worker-Main-3/INFO] [net.optifine.Config/]: [OptiFine] Scaled too small texture: minecraft:block/redstone_dust_overlay, 16 -> 64
+[04May2026 18:58:23.355] [Worker-Main-3/INFO] [net.optifine.Config/]: [OptiFine] Scaled too small texture: minecraft:block/lightning_rod_on, 16 -> 64
+[04May2026 18:58:23.356] [Worker-Main-3/INFO] [net.optifine.Config/]: [OptiFine] Scaled too small texture: minecraft:optifine/ctm/default/empty, 16 -> 64
+[04May2026 18:58:23.356] [Worker-Main-3/INFO] [net.optifine.Config/]: [OptiFine] Scaled too small texture: forge:white, 16 -> 64
+[04May2026 18:58:23.356] [Worker-Main-3/INFO] [net.optifine.Config/]: [OptiFine] Scaled too small texture: forge:block/milk_still, 16 -> 64
+[04May2026 18:58:23.359] [Worker-Main-3/INFO] [net.optifine.Config/]: [OptiFine] Scaled too small texture: minecraft:block/debug2, 16 -> 64
+[04May2026 18:58:25.308] [Render thread/INFO] [com.mojang.blaze3d.audio.Library/]: OpenAL initialized on device OpenAL Soft on Speakers (fifine SC3)
+[04May2026 18:58:25.309] [Render thread/INFO] [net.minecraft.client.sounds.SoundEngine/SOUNDS]: Sound engine started
+[04May2026 18:58:25.310] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureAtlas/]: Created: 2048x1024x0 minecraft:textures/atlas/particles.png-atlas
+[04May2026 18:58:25.328] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Animated sprites: 1
+[04May2026 18:58:25.330] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureAtlas/]: Created: 512x512x0 minecraft:textures/atlas/decorated_pot.png-atlas
+[04May2026 18:58:25.346] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Animated sprites: 0
+[04May2026 18:58:25.346] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureAtlas/]: Created: 8192x4096x0 minecraft:textures/atlas/armor_trims.png-atlas
+[04May2026 18:58:25.392] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Animated sprites: 0
+[04May2026 18:58:25.397] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureAtlas/]: Created: 2048x1024x0 minecraft:textures/atlas/paintings.png-atlas
+[04May2026 18:58:25.514] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Animated sprites: 0
+[04May2026 18:58:25.514] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureAtlas/]: Created: 4096x2048x0 minecraft:textures/atlas/shield_patterns.png-atlas
+[04May2026 18:58:25.533] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Animated sprites: 0
+[04May2026 18:58:25.533] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureAtlas/]: Created: 8192x4096x4 minecraft:textures/atlas/blocks.png-atlas
+[04May2026 18:58:25.702] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Update block sprites
+[04May2026 18:58:25.703] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Animated sprites: 58
+[04May2026 18:58:25.704] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureAtlas/]: Created: 2048x2048x0 minecraft:textures/atlas/chest.png-atlas
+[04May2026 18:58:25.771] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Animated sprites: 0
+[04May2026 18:58:25.772] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureAtlas/]: Created: 1024x512x0 minecraft:textures/atlas/celestials.png-atlas
+[04May2026 18:58:25.783] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Animated sprites: 0
+[04May2026 18:58:25.783] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureAtlas/]: Created: 4096x2048x0 minecraft:textures/atlas/banner_patterns.png-atlas
+[04May2026 18:58:25.792] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Animated sprites: 0
+[04May2026 18:58:25.793] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureAtlas/]: Created: 2048x2048x0 minecraft:textures/atlas/beds.png-atlas
+[04May2026 18:58:25.806] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Animated sprites: 0
+[04May2026 18:58:25.806] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureAtlas/]: Created: 4096x2048x0 minecraft:textures/atlas/items.png-atlas
+[04May2026 18:58:25.830] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Update item sprites
+[04May2026 18:58:25.830] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Animated sprites: 0
+[04May2026 18:58:25.831] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureAtlas/]: Created: 4096x2048x0 minecraft:textures/atlas/gui.png-atlas
+[04May2026 18:58:25.869] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Animated sprites: 5
+[04May2026 18:58:25.870] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureAtlas/]: Created: 256x256x0 minecraft:textures/atlas/map_decorations.png-atlas
+[04May2026 18:58:25.891] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Animated sprites: 0
+[04May2026 18:58:25.891] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureAtlas/]: Created: 2048x1024x0 minecraft:textures/atlas/signs.png-atlas
+[04May2026 18:58:25.894] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Animated sprites: 0
+[04May2026 18:58:25.894] [Render thread/INFO] [net.minecraft.client.renderer.texture.TextureAtlas/]: Created: 2048x2048x0 minecraft:textures/atlas/shulker_boxes.png-atlas
+[04May2026 18:58:25.899] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Animated sprites: 0
+[04May2026 18:58:25.900] [Render thread/WARN] [net.minecraft.client.resources.model.AtlasManager/]: Duplicate sprite minecraft:optifine/ctm/default/empty from atlas minecraft:textures/atlas/gui.png, already defined in atlas minecraft:textures/atlas/items.png. This will be rejected in a future version
+[04May2026 18:58:25.900] [Render thread/WARN] [net.minecraft.client.resources.model.AtlasManager/]: Duplicate sprite minecraft:optifine/ctm/default/empty from atlas minecraft:textures/atlas/beds.png, already defined in atlas minecraft:textures/atlas/items.png. This will be rejected in a future version
+[04May2026 18:58:25.900] [Render thread/WARN] [net.minecraft.client.resources.model.AtlasManager/]: Duplicate sprite minecraft:optifine/ctm/default/empty from atlas minecraft:textures/atlas/paintings.png, already defined in atlas minecraft:textures/atlas/items.png. This will be rejected in a future version
+[04May2026 18:58:25.901] [Render thread/WARN] [net.minecraft.client.resources.model.AtlasManager/]: Duplicate sprite minecraft:optifine/ctm/default/empty from atlas minecraft:textures/atlas/shulker_boxes.png, already defined in atlas minecraft:textures/atlas/items.png. This will be rejected in a future version
+[04May2026 18:58:25.901] [Render thread/WARN] [net.minecraft.client.resources.model.AtlasManager/]: Duplicate sprite minecraft:optifine/ctm/default/empty from atlas minecraft:textures/atlas/signs.png, already defined in atlas minecraft:textures/atlas/items.png. This will be rejected in a future version
+[04May2026 18:58:25.901] [Render thread/WARN] [net.minecraft.client.resources.model.AtlasManager/]: Duplicate sprite minecraft:optifine/ctm/default/empty from atlas minecraft:textures/atlas/chest.png, already defined in atlas minecraft:textures/atlas/items.png. This will be rejected in a future version
+[04May2026 18:58:25.901] [Render thread/WARN] [net.minecraft.client.resources.model.AtlasManager/]: Duplicate sprite minecraft:optifine/ctm/default/empty from atlas minecraft:textures/atlas/particles.png, already defined in atlas minecraft:textures/atlas/items.png. This will be rejected in a future version
+[04May2026 18:58:25.901] [Render thread/WARN] [net.minecraft.client.resources.model.AtlasManager/]: Duplicate sprite minecraft:optifine/ctm/default/empty from atlas minecraft:textures/atlas/celestials.png, already defined in atlas minecraft:textures/atlas/items.png. This will be rejected in a future version
+[04May2026 18:58:25.902] [Render thread/WARN] [net.minecraft.client.resources.model.AtlasManager/]: Duplicate sprite minecraft:optifine/ctm/default/empty from atlas minecraft:textures/atlas/shield_patterns.png, already defined in atlas minecraft:textures/atlas/items.png. This will be rejected in a future version
+[04May2026 18:58:25.902] [Render thread/WARN] [net.minecraft.client.resources.model.AtlasManager/]: Duplicate sprite minecraft:optifine/ctm/default/empty from atlas minecraft:textures/atlas/decorated_pot.png, already defined in atlas minecraft:textures/atlas/items.png. This will be rejected in a future version
+[04May2026 18:58:25.902] [Render thread/WARN] [net.minecraft.client.resources.model.AtlasManager/]: Duplicate sprite minecraft:optifine/ctm/default/empty from atlas minecraft:textures/atlas/map_decorations.png, already defined in atlas minecraft:textures/atlas/items.png. This will be rejected in a future version
+[04May2026 18:58:25.902] [Render thread/WARN] [net.minecraft.client.resources.model.AtlasManager/]: Duplicate sprite minecraft:optifine/ctm/default/empty from atlas minecraft:textures/atlas/blocks.png, already defined in atlas minecraft:textures/atlas/items.png. This will be rejected in a future version
+[04May2026 18:58:25.902] [Render thread/WARN] [net.minecraft.client.resources.model.AtlasManager/]: Duplicate sprite minecraft:optifine/ctm/default/empty from atlas minecraft:textures/atlas/banner_patterns.png, already defined in atlas minecraft:textures/atlas/items.png. This will be rejected in a future version
+[04May2026 18:58:25.902] [Render thread/WARN] [net.minecraft.client.resources.model.AtlasManager/]: Duplicate sprite minecraft:optifine/ctm/default/empty from atlas minecraft:textures/atlas/armor_trims.png, already defined in atlas minecraft:textures/atlas/items.png. This will be rejected in a future version
+[04May2026 18:58:26.192] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] *** Reloading custom textures ***
+[04May2026 18:58:26.749] [Render thread/INFO] [net.optifine.Config/]: [OptiFine] Disable Forge light pipeline
+[04May2026 18:58:27.489] [IO-Worker-1/INFO] [com.mojang.realmsclient.client.RealmsClient/]: Could not authorize you against Realms server: java.lang.RuntimeException: Failed to parse into SignedJWT: 883cef6f124032e9b0f933f71fba71d9
+[04May2026 18:58:27.490] [IO-Worker-1/ERROR] [com.mojang.realmsclient.RealmsAvailability/]: Couldn't connect to realms
+com.mojang.realmsclient.exception.RealmsServiceException: Realms authentication error with message 'java.lang.RuntimeException: Failed to parse into SignedJWT: 883cef6f124032e9b0f933f71fba71d9'
+	at TRANSFORMER/minecraft@1.21.11/com.mojang.realmsclient.client.RealmsClient.execute(RealmsClient.java:526) ~[forge-1.21.11-61.1.5-client.jar!/:?]
+	at TRANSFORMER/minecraft@1.21.11/com.mojang.realmsclient.client.RealmsClient.clientCompatible(RealmsClient.java:307) ~[forge-1.21.11-61.1.5-client.jar!/:?]
+	at TRANSFORMER/minecraft@1.21.11/com.mojang.realmsclient.RealmsAvailability.lambda$check$0(RealmsAvailability.java:48) ~[forge-1.21.11-61.1.5-client.jar!/:?]
+	at java.base/java.util.concurrent.CompletableFuture$AsyncSupply.run(CompletableFuture.java:1768) ~[?:?]
+	at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1144) ~[?:?]
+	at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642) ~[?:?]
+	at java.base/java.lang.Thread.run(Thread.java:1583) [?:?]
+[04May2026 18:58:35.730] [Render thread/INFO] [net.minecraft.world.item.crafting.RecipeManager/]: Loaded 1470 recipes
+[04May2026 18:58:35.749] [Render thread/INFO] [net.minecraft.advancements.AdvancementTree/]: Loaded 1584 advancements
+[04May2026 18:58:35.902] [Server thread/INFO] [net.minecraft.client.server.IntegratedServer/]: Starting integrated minecraft server version 1.21.11
+[04May2026 18:58:35.902] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: Generating keypair
+[04May2026 18:58:37.522] [Server thread/INFO] [net.minecraft.server.level.progress.LoggingLevelLoadListener/]: Loading 0 persistent chunks...
+[04May2026 18:58:37.534] [Server thread/INFO] [net.minecraftforge.server.permission.PermissionAPI/]: Successfully initialized permission handler forge:default_handler
+[04May2026 18:58:37.783] [Server thread/INFO] [net.minecraft.server.level.progress.LoggingLevelLoadListener/]: Loading 49 chunks for player spawn...
+[04May2026 18:58:37.784] [Server thread/INFO] [net.minecraft.server.level.progress.LoggingLevelLoadListener/]: Preparing spawn area: 16%
+[04May2026 18:58:38.036] [Server thread/INFO] [net.minecraft.server.level.progress.LoggingLevelLoadListener/]: Preparing spawn area: 16%
+[04May2026 18:58:38.151] [Server thread/INFO] [net.minecraft.server.level.progress.LoggingLevelLoadListener/]: Time elapsed: 629 ms
+[04May2026 18:58:38.307] [Render thread/INFO] [net.minecraftforge.common.ForgeHooks/]: Connected to a modded server.
+[04May2026 18:58:38.407] [Server thread/INFO] [net.minecraft.server.players.PlayerList/]: Pleeey[local:E:db3af1ed] logged in with entity id 105 at (108.45897015349347, 75.0, -178.76214509338243)
+[04May2026 18:58:38.439] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: Pleeey joined the game
+[04May2026 18:58:38.638] [Server thread/INFO] [net.minecraft.client.server.IntegratedServer/]: Changing view distance to 64, from 10
+[04May2026 18:58:38.653] [Server thread/INFO] [net.minecraft.client.server.IntegratedServer/]: Changing simulation distance to 32, from 0
+[04May2026 18:58:38.690] [Render thread/INFO] [net.minecraft.advancements.AdvancementTree/]: Loaded 3 advancements
+[04May2026 18:58:38.829] [Render thread/INFO] [net.minecraft.client.renderer.DynamicUniformStorage/]: Resizing Dynamic Transforms UBO, capacity limit of 2 reached during a single frame. New capacity will be 4.
+[04May2026 18:58:38.993] [Render thread/INFO] [net.minecraft.client.renderer.DynamicUniformStorage/]: Resizing Dynamic Transforms UBO, capacity limit of 4 reached during a single frame. New capacity will be 8.
+[04May2026 18:58:39.195] [Render thread/INFO] [net.minecraft.client.renderer.DynamicUniformStorage/]: Resizing Chunk Sections UBO, capacity limit of 2 reached during a single frame. New capacity will be 4.
+[04May2026 18:58:39.243] [Render thread/INFO] [net.minecraft.client.renderer.DynamicUniformStorage/]: Resizing Chunk Sections UBO, capacity limit of 4 reached during a single frame. New capacity will be 8.
+[04May2026 18:58:39.283] [Render thread/INFO] [net.minecraft.client.renderer.DynamicUniformStorage/]: Resizing Chunk Sections UBO, capacity limit of 8 reached during a single frame. New capacity will be 16.
+[04May2026 18:58:39.342] [Render thread/INFO] [net.minecraft.client.renderer.DynamicUniformStorage/]: Resizing Chunk Sections UBO, capacity limit of 16 reached during a single frame. New capacity will be 32.
+[04May2026 18:58:39.446] [Render thread/INFO] [net.minecraft.client.renderer.DynamicUniformStorage/]: Resizing Chunk Sections UBO, capacity limit of 32 reached during a single frame. New capacity will be 64.
+[04May2026 18:58:39.707] [Render thread/INFO] [net.minecraft.client.renderer.DynamicUniformStorage/]: Resizing Chunk Sections UBO, capacity limit of 64 reached during a single frame. New capacity will be 128.
+[04May2026 18:58:40.160] [Render thread/INFO] [net.minecraft.client.renderer.DynamicUniformStorage/]: Resizing Chunk Sections UBO, capacity limit of 128 reached during a single frame. New capacity will be 256.
+[04May2026 18:58:43.038] [Render thread/INFO] [net.minecraft.client.renderer.DynamicUniformStorage/]: Resizing Chunk Sections UBO, capacity limit of 256 reached during a single frame. New capacity will be 512.
+[04May2026 18:58:43.903] [Server Pinger #2/ERROR] [net.minecraft.client.multiplayer.ServerStatusPinger/]: Can't ping play.Mlegacy.ne: Unknown host
+[04May2026 18:58:47.595] [Render thread/INFO] [net.minecraft.client.renderer.DynamicUniformStorage/]: Resizing Chunk Sections UBO, capacity limit of 512 reached during a single frame. New capacity will be 1024.
+[04May2026 18:58:55.136] [Server thread/INFO] [net.minecraft.client.server.IntegratedServer/]: Saving and pausing game...
+[04May2026 18:58:55.173] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: Saving chunks for level 'ServerLevel[New World]'/minecraft:overworld
+[04May2026 18:58:55.233] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: Saving chunks for level 'ServerLevel[New World]'/minecraft:the_end
+[04May2026 18:58:55.233] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: Saving chunks for level 'ServerLevel[New World]'/minecraft:the_nether
+[04May2026 18:58:55.752] [Server thread/INFO] [net.minecraft.server.network.ServerGamePacketListenerImpl/]: Pleeey lost connection: Disconnected
+[04May2026 18:58:55.752] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: Pleeey left the game
+[04May2026 18:58:55.773] [Server thread/INFO] [net.minecraft.server.network.ServerCommonPacketListenerImpl/]: Stopping singleplayer server as player logged out
+[04May2026 18:58:55.819] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: Stopping server
+[04May2026 18:58:55.819] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: Saving players
+[04May2026 18:58:55.819] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: Saving worlds
+[04May2026 18:58:56.264] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: Saving chunks for level 'ServerLevel[New World]'/minecraft:overworld
+[04May2026 18:58:58.805] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: Saving chunks for level 'ServerLevel[New World]'/minecraft:the_end
+[04May2026 18:58:58.811] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: Saving chunks for level 'ServerLevel[New World]'/minecraft:the_nether
+[04May2026 18:58:58.832] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: ThreadedAnvilChunkStorage (New World (1)): All chunks are saved
+[04May2026 18:58:58.832] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: ThreadedAnvilChunkStorage (DIM1): All chunks are saved
+[04May2026 18:58:58.832] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: ThreadedAnvilChunkStorage (DIM-1): All chunks are saved
+[04May2026 18:58:58.832] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: ThreadedAnvilChunkStorage: All dimensions are saved
+[04May2026 18:59:05.420] [Render thread/INFO] [net.minecraft.client.Minecraft/]: Stopping!
