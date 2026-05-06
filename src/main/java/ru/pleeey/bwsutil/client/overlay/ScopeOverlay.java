@@ -50,6 +50,19 @@ public final class ScopeOverlay {
 
     public static ScopeMode getMode() { return currentMode; }
 
+    public static boolean isScopeInputActive(Minecraft mc) {
+        if (!enabled || mc == null || mc.player == null) return false;
+        LocalPlayer player = mc.player;
+        ItemStack heldMain = player.getMainHandItem();
+        ItemStack heldOff  = player.getOffhandItem();
+        boolean isDrawing = player.isUsingItem() && (player.getUseItem().getItem() instanceof BowItem);
+        boolean isHolding = (heldMain.getItem() instanceof BowItem) || (heldOff.getItem() instanceof BowItem);
+        if (ScopeConfig.SHOW_ONLY_WHILE_DRAWING.get()) {
+            return isDrawing;
+        }
+        return isDrawing || isHolding;
+    }
+
     /**
      * Вызывается ровно один раз за игровой тик из ClientGameEvents.
      * Управляет захватом/сбросом цели в AUTO-режиме.

@@ -45,6 +45,14 @@ public final class BedWarsOverlay {
     private static final int MAX_TEAM    = 4;
     private static final int DANGER_M    = 15;
     private static final long HUD_CACHE_TTL_MS = 30_000L;
+    private static final int RADAR_SIZE = 92;
+    private static final int RADAR_RANGE_BLOCKS_DEFAULT = 48;
+    private static final int RADAR_RANGE_BLOCKS_MIN = 24;
+    private static final int RADAR_RANGE_BLOCKS_MAX = 96;
+    private static final int RADAR_RANGE_BLOCKS_STEP = 4;
+    private static final int[] RADAR_RANGE_MARKS = new int[] {10, 20, 30};
+    private static final int RADAR_Y_RANGE = 10;
+    private static int radarRangeBlocks = RADAR_RANGE_BLOCKS_DEFAULT;
 
     // ── Кровати: кеш результатов сканирования ───────────────────────────────
 
@@ -119,6 +127,17 @@ public final class BedWarsOverlay {
         scanState.active = false;
         scanState.center = BlockPos.ZERO;
         lastBedScanCompletedAtMs = 0L;
+        radarRangeBlocks = RADAR_RANGE_BLOCKS_DEFAULT;
+    }
+
+    public static void increaseRadarScale() {
+        // Larger scale (zoom-in) = smaller world range.
+        radarRangeBlocks = Math.max(RADAR_RANGE_BLOCKS_MIN, radarRangeBlocks - RADAR_RANGE_BLOCKS_STEP);
+    }
+
+    public static void decreaseRadarScale() {
+        // Smaller scale (zoom-out) = larger world range.
+        radarRangeBlocks = Math.min(RADAR_RANGE_BLOCKS_MAX, radarRangeBlocks + RADAR_RANGE_BLOCKS_STEP);
     }
 
     // ── Периодическое сканирование кроватей (вызывается из ClientGameEvents) ─
@@ -211,32 +230,82 @@ public final class BedWarsOverlay {
     }
 
     /**
-     * Оценивает защиту вокруг кровати: сканирует 5×5×4 зону над позицией.
+     * Оценивает защиту в ближайшей оболочке вокруг кровати.
+     * Берём только локальные блоки (3×3×3), чтобы не считать дальние конструкции.
      * Blast resistance → очки: воздух=0, вул=1, камень/терракота=2, endstone=3, обсидиан=8.
      */
     private static DefenseSample calcDefense(Minecraft mc, BlockPos bedHead) {
-        int score = 0;
+        int weakCount = 0;   // wool / weak shell
+        int midCount = 0;    // terracotta / stone-like
+        int strongCount = 0; // endstone / strong blocks
+        int obsCount = 0;    // obsidian-like
         int unknown = 0;
         BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
-        for (int dx = -2; dx <= 2; dx++) {
-            for (int dz = -2; dz <= 2; dz++) {
-                for (int dy = 1; dy <= 4; dy++) {
-                    p.set(bedHead.getX() + dx, bedHead.getY() + dy, bedHead.getZ() + dz);
-                    if (!mc.level.isLoaded(p)) {
-                        unknown++;
-                        continue;
+
+        // Include both bed parts (head + nearby foot) to avoid misclassifying asymmetric defense.
+        Set<BlockPos> bedParts = new LinkedHashSet<>();
+        bedParts.add(bedHead.immutable());
+        for (int ox = -1; ox <= 1; ox++) {
+            for (int oy = -1; oy <= 1; oy++) {
+                for (int oz = -1; oz <= 1; oz++) {
+                    if (ox == 0 && oy == 0 && oz == 0) continue;
+                    p.set(bedHead.getX() + ox, bedHead.getY() + oy, bedHead.getZ() + oz);
+                    if (!mc.level.isLoaded(p)) continue;
+                    BlockState maybeBed = mc.level.getBlockState(p);
+                    if (maybeBed.getBlock() instanceof BedBlock) {
+                        bedParts.add(p.immutable());
                     }
-                    BlockState bs = mc.level.getBlockState(p);
-                    if (bs.isAir()) continue;
-                    float blastRes = bs.getBlock().getExplosionResistance();
-                    if      (blastRes < 1f)    score += 1;   // вул, стекло
-                    else if (blastRes < 10f)   score += 2;   // камень, терракота, бетон, энд-камень
-                    else if (blastRes < 1200f) score += 3;   // прочные блоки
-                    else                       score += 8;   // обсидиан
                 }
             }
         }
-        // If too many blocks are not loaded, do not trust this sample fully.
+
+        Set<BlockPos> visited = new HashSet<>();
+        for (BlockPos base : bedParts) {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    for (int dy = -1; dy <= 1; dy++) {
+                        if (dx == 0 && dy == 0 && dz == 0) continue;
+                        if (dy < 0) continue; // ignore island material below bed level
+                        p.set(base.getX() + dx, base.getY() + dy, base.getZ() + dz);
+                        BlockPos current = p.immutable();
+                        if (!visited.add(current)) continue;
+
+                        if (!mc.level.isLoaded(current)) {
+                            unknown++;
+                            continue;
+                        }
+                        BlockState bs = mc.level.getBlockState(current);
+                        if (bs.isAir()) continue;
+                        if (bs.getBlock() instanceof BedBlock) continue;
+                        float blastRes = bs.getBlock().getExplosionResistance();
+                        if (blastRes < 1f) {
+                            weakCount++;
+                        } else if (blastRes < 10f) {
+                            midCount++;
+                        } else if (blastRes < 1200f) {
+                            strongCount++;
+                        } else {
+                            obsCount++;
+                        }
+                    }
+                }
+            }
+        }
+
+        int score;
+        if (obsCount >= 1) {
+            score = 180 + obsCount * 8 + strongCount * 2;
+        } else if (strongCount >= 3) {
+            score = 110 + strongCount * 4 + midCount;
+        } else if (midCount >= 3) {
+            score = 55 + midCount * 3 + weakCount;
+        } else if (weakCount > 0) {
+            score = 18 + weakCount * 2;
+        } else {
+            score = 0;
+        }
+
+        // 3x3x3 shell: 26 checks; tolerate small chunk-edge uncertainty.
         boolean complete = unknown <= 8;
         return new DefenseSample(score, complete);
     }
@@ -410,6 +479,8 @@ public final class BedWarsOverlay {
         if (showTable) {
             drawTeamTable(g, mc, teamStats, panelX + PAD, y, PANEL_W - PAD * 2);
         }
+
+        drawTacticalRadar(g, mc, self, enemies);
     }
 
     // ── Строка игрока ────────────────────────────────────────────────────────
@@ -502,6 +573,192 @@ public final class BedWarsOverlay {
 
         g.fill(x - 4, y - 2, x + mc.font.width(msg) + 4, y + 10, bg);
         txt(g, mc, msg, x, y, fc);
+    }
+
+    private static void drawTacticalRadar(GuiGraphics g, Minecraft mc, LocalPlayer self, List<AbstractClientPlayer> enemies) {
+        int sw = mc.getWindow().getGuiScaledWidth();
+        int x = sw - RADAR_SIZE - 8;
+        int y = 8;
+        int size = RADAR_SIZE;
+        int cx = x + size / 2;
+        int cy = y + size / 2;
+        int r = size / 2 - 6;
+
+        g.fill(x - 1, y - 1, x + size + 1, y + size + 1, 0x33000000);
+        g.fill(x, y, x + size, y + size, 0x22000000);
+        drawRadarRangeRings(g, mc, cx, cy, r);
+        g.fill(cx - 1, y + 4, cx + 1, y + size - 4, 0x33FFFFFF);
+        g.fill(x + 4, cy - 1, x + size - 4, cy + 1, 0x33FFFFFF);
+
+        int builtMarks = drawRadarConstructions(g, mc, self, cx, cy, r);
+        int enemyMarks = drawRadarEnemies(g, self, enemies, cx, cy, r);
+
+        // Player marker in center.
+        g.fill(cx - 2, cy - 2, cx + 2, cy + 2, 0xFF55FFFF);
+        txt(g, mc, "RADAR", x + 5, y + 4, 0xFFFFFFFF);
+        txt(g, mc, enemyMarks + "E", x + 6, y + size - 11, 0xFFFF6666);
+        txt(g, mc, builtMarks + "B", x + size - 24, y + size - 11, 0xFFBBBBBB);
+    }
+
+    private static void drawRadarRangeRings(GuiGraphics g, Minecraft mc, int cx, int cy, int radius) {
+        for (int mark : RADAR_RANGE_MARKS) {
+            int rr = (int) Math.round(mark * (double) radius / radarRangeBlocks);
+            if (rr <= 1) continue;
+            int color = mark == 30 ? 0x66B8DCFF : 0x447AA5D6;
+            drawRadarRing(g, cx, cy, rr, color);
+        }
+    }
+
+    private static void drawRadarRing(GuiGraphics g, int cx, int cy, int rr, int color) {
+        // Midpoint circle for a cleaner, continuous ring.
+        int x = rr;
+        int y = 0;
+        int d = 1 - rr;
+        while (x >= y) {
+            plotRadarCircle8(g, cx, cy, x, y, color);
+            y++;
+            if (d < 0) {
+                d += 2 * y + 1;
+            } else {
+                x--;
+                d += 2 * (y - x) + 1;
+            }
+        }
+    }
+
+    private static void plotRadarCircle8(GuiGraphics g, int cx, int cy, int x, int y, int color) {
+        drawRadarPixel(g, cx + x, cy + y, color);
+        drawRadarPixel(g, cx + y, cy + x, color);
+        drawRadarPixel(g, cx - y, cy + x, color);
+        drawRadarPixel(g, cx - x, cy + y, color);
+        drawRadarPixel(g, cx - x, cy - y, color);
+        drawRadarPixel(g, cx - y, cy - x, color);
+        drawRadarPixel(g, cx + y, cy - x, color);
+        drawRadarPixel(g, cx + x, cy - y, color);
+    }
+
+    private static void drawRadarPixel(GuiGraphics g, int x, int y, int color) {
+        g.fill(x, y, x + 1, y + 1, color);
+    }
+
+    private static int drawRadarConstructions(GuiGraphics g, Minecraft mc, LocalPlayer self, int cx, int cy, int radius) {
+        if (mc.level == null) return 0;
+        int marks = 0;
+        BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+        int step = 3;
+        int y0 = self.blockPosition().getY();
+
+        for (int dx = -radarRangeBlocks; dx <= radarRangeBlocks; dx += step) {
+            for (int dz = -radarRangeBlocks; dz <= radarRangeBlocks; dz += step) {
+                double distSq = dx * dx + dz * dz;
+                if (distSq > radarRangeBlocks * radarRangeBlocks) continue;
+
+                int px = self.blockPosition().getX() + dx;
+                int pz = self.blockPosition().getZ() + dz;
+                BlockPos bestPos = null;
+                BlockState bestState = null;
+                int bestDy = Integer.MAX_VALUE;
+                for (int dy = -RADAR_Y_RANGE; dy <= RADAR_Y_RANGE; dy++) {
+                    p.set(px, y0 + dy, pz);
+                    if (!mc.level.isLoaded(p)) continue;
+                    BlockState bs = mc.level.getBlockState(p);
+                    if (bs.isAir()) continue;
+                    if (bs.getBlock() instanceof BedBlock) continue;
+                    int absDy = Math.abs(dy);
+                    if (absDy < bestDy) {
+                        bestDy = absDy;
+                        bestPos = p.immutable();
+                        bestState = bs;
+                    }
+                }
+                if (bestPos == null || bestState == null) continue;
+
+                int[] radar = toRadarCoords(self, dx, dz, radius);
+                int rx = radar[0];
+                int ry = radar[1];
+                int col = radarConstructionColor(mc, bestPos);
+                g.fill(cx + rx, cy + ry, cx + rx + 1, cy + ry + 1, col);
+                marks++;
+            }
+        }
+        return marks;
+    }
+
+    private static int radarConstructionColor(Minecraft mc, BlockPos pos) {
+        int x = pos.getX();
+        int y = pos.getY();
+        int z = pos.getZ();
+        BlockPos above = new BlockPos(x, y + 1, z);
+        BlockPos above2 = new BlockPos(x, y + 2, z);
+        BlockPos below = new BlockPos(x, y - 1, z);
+
+        boolean hasAbove = !mc.level.getBlockState(above).isAir();
+        boolean hasAbove2 = !mc.level.getBlockState(above2).isAir();
+        boolean airBelow = mc.level.getBlockState(below).isAir();
+
+        int sideSolid = 0;
+        if (!mc.level.getBlockState(new BlockPos(x + 1, y, z)).isAir()) sideSolid++;
+        if (!mc.level.getBlockState(new BlockPos(x - 1, y, z)).isAir()) sideSolid++;
+        if (!mc.level.getBlockState(new BlockPos(x, y, z + 1)).isAir()) sideSolid++;
+        if (!mc.level.getBlockState(new BlockPos(x, y, z - 1)).isAir()) sideSolid++;
+
+        // High constructions (towers/stacks): 3+ vertical blocks.
+        if (hasAbove && hasAbove2) return 0xCC66E6FF;
+        // Walls/fortifications: dense side neighbors or 2-block height.
+        if (hasAbove || sideSolid >= 3) return 0xCCFFB366;
+        // Bridges / thin paths: exposed bottom or sparse neighbors.
+        if (airBelow || sideSolid <= 1) return 0xCCCECECE;
+        return 0xCC97D897;
+    }
+
+    private static int drawRadarEnemies(GuiGraphics g, LocalPlayer self, List<AbstractClientPlayer> enemies, int cx, int cy, int radius) {
+        int marks = 0;
+        for (AbstractClientPlayer enemy : enemies) {
+            double dx = enemy.getX() - self.getX();
+            double dz = enemy.getZ() - self.getZ();
+            double dist = Math.sqrt(dx * dx + dz * dz);
+            if (dist > radarRangeBlocks || dist < 0.01) continue;
+
+            int[] radar = toRadarCoords(self, dx, dz, radius);
+            int rx = radar[0];
+            int ry = radar[1];
+            int px = cx + rx;
+            int py = cy + ry;
+
+            int col = isAiming(enemy) ? 0xFFFFAA00 : 0xFFFF5555;
+            g.fill(px - 1, py - 1, px + 2, py + 2, col);
+
+            // Movement vector arrow.
+            double vx = enemy.getX() - enemy.xo;
+            double vz = enemy.getZ() - enemy.zo;
+            double vm = Math.sqrt(vx * vx + vz * vz);
+            if (vm > 0.002) {
+                int mx = (int) Math.round(vx / vm * 4.0);
+                int my = (int) Math.round(vz / vm * 4.0);
+                g.fill(px + mx - 1, py + my - 1, px + mx + 1, py + my + 1, 0xFFFFCC88);
+            }
+            marks++;
+        }
+        return marks;
+    }
+
+    private static int[] toRadarCoords(LocalPlayer self, double dx, double dz, int radius) {
+        // Rotate world offsets into player-local radar space:
+        // +X on radar = player's right, -Y on radar = player's forward.
+        Vec3 look = self.getLookAngle();
+        Vec3 forward = new Vec3(look.x, 0.0, look.z);
+        if (forward.lengthSqr() < 1.0e-6) {
+            forward = new Vec3(0.0, 0.0, 1.0);
+        } else {
+            forward = forward.normalize();
+        }
+        Vec3 right = new Vec3(-forward.z, 0.0, forward.x);
+
+        double side = dx * right.x + dz * right.z;
+        double front = dx * forward.x + dz * forward.z;
+        int rx = (int) Math.round(side * radius / radarRangeBlocks);
+        int ry = (int) Math.round(-front * radius / radarRangeBlocks);
+        return new int[] {rx, ry};
     }
 
     private static PlayerView pickPriorityTarget(List<PlayerView> enemies) {
@@ -676,7 +933,7 @@ public final class BedWarsOverlay {
             int nc = teamDisplayColor(mc, t);
             stats.add(new TeamStat(t, t != null ? cap(t.getName(), 7) : "?",
                 nc, pl.size(), computeScore(pl), bestArmorIn(pl), false,
-                bedForTeam(t)));
+                bedForTeam(t, true, false)));
         }
 
         if (!teammates.isEmpty() || myTeam != null) {
@@ -685,14 +942,14 @@ public final class BedWarsOverlay {
             int nc = teamDisplayColor(mc, myTeam);
             stats.add(new TeamStat(myTeam, myTeam != null ? cap(myTeam.getName(), 7) : "YOU",
                 nc, mine.size(), computeScore(mine), bestArmorIn(mine), true,
-                bedForTeam(myTeam)));
+                bedForTeam(myTeam, true, true)));
         }
 
         stats.sort(Comparator.comparingInt(TeamStat::score).reversed());
         return stats;
     }
 
-    private static BedInfo bedForTeam(PlayerTeam team) {
+    private static BedInfo bedForTeam(PlayerTeam team, boolean allowInferenceFallback, boolean strictInference) {
         Minecraft mc = Minecraft.getInstance();
         if (team == null || mc.level == null) return null;
 
@@ -711,10 +968,12 @@ public final class BedWarsOverlay {
 
         // Fallback for servers with custom scoreboard formatting:
         // pick the closest known bed to the members of this team.
-        return inferBedByTeamPlayers(mc, team);
+        // For own team we avoid this heuristic to prevent false "alive" bed status.
+        if (!allowInferenceFallback) return null;
+        return inferBedByTeamPlayers(mc, team, strictInference);
     }
 
-    private static BedInfo inferBedByTeamPlayers(Minecraft mc, PlayerTeam team) {
+    private static BedInfo inferBedByTeamPlayers(Minecraft mc, PlayerTeam team, boolean strictInference) {
         List<AbstractClientPlayer> teamPlayers = new ArrayList<>();
         for (Player raw : mc.level.players()) {
             if (!(raw instanceof AbstractClientPlayer p)) continue;
@@ -726,6 +985,7 @@ public final class BedWarsOverlay {
 
         BedInfo best = null;
         double bestAvg = Double.MAX_VALUE;
+        double secondBestAvg = Double.MAX_VALUE;
 
         // Deduplicate beds by position because bedData is keyed by dye.
         Map<BlockPos, BedInfo> uniqueBeds = new LinkedHashMap<>();
@@ -741,13 +1001,22 @@ public final class BedWarsOverlay {
             }
             double avgSq = sumSq / teamPlayers.size();
             if (avgSq < bestAvg) {
+                secondBestAvg = bestAvg;
                 bestAvg = avgSq;
                 best = info;
+            } else if (avgSq < secondBestAvg) {
+                secondBestAvg = avgSq;
             }
         }
 
-        // Ignore clearly unrelated beds.
-        return bestAvg <= (220.0 * 220.0) ? best : null;
+        // Ignore clearly unrelated beds; for own-team fallback require higher confidence.
+        double maxDist = strictInference ? 140.0 : 220.0;
+        if (bestAvg > (maxDist * maxDist)) return null;
+        if (strictInference && secondBestAvg < Double.MAX_VALUE) {
+            // Best match should be meaningfully better than next candidate.
+            if (bestAvg > secondBestAvg * 0.80) return null;
+        }
+        return best;
     }
 
     private static int computeScore(List<AbstractClientPlayer> players) {

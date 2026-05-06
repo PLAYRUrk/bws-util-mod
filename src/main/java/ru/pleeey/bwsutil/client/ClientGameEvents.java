@@ -48,15 +48,10 @@ public class ClientGameEvents {
         if (ScopeKeys.MODE_TOGGLE.consumeClick()) {
             ScopeOverlay.toggleMode();
         }
-        while (ScopeKeys.ZERO_INCREASE.consumeClick()) {
-            ScopeConfig.ZERO_DISTANCE.set(Math.min(200, ScopeConfig.ZERO_DISTANCE.get() + 5));
-        }
-        while (ScopeKeys.ZERO_DECREASE.consumeClick()) {
-            ScopeConfig.ZERO_DISTANCE.set(Math.max(10, ScopeConfig.ZERO_DISTANCE.get() - 5));
-        }
         if (ScopeKeys.BEDWARS_TOGGLE.consumeClick()) {
             BedWarsOverlay.toggleEnabled();
         }
+        handlePlusMinusActions(mc);
 
         // Захват цели — ровно один раз за тик, независимо от числа render-вызовов за кадр
         ScopeOverlay.tick(mc, mc.player);
@@ -80,6 +75,37 @@ public class ClientGameEvents {
     private static boolean isConsumable(ItemStack stack) {
         ItemUseAnimation anim = stack.getUseAnimation();
         return anim == ItemUseAnimation.EAT || anim == ItemUseAnimation.DRINK;
+    }
+
+    private static void handlePlusMinusActions(Minecraft mc) {
+        boolean scopeActive = ScopeOverlay.isScopeInputActive(mc);
+        ScopeOverlay.ScopeMode mode = ScopeOverlay.getMode();
+        boolean bedWarsActive = BedWarsOverlay.isEnabled();
+
+        // Radar scale control: AUTO scope mode OR no active scope context (e.g. no bow in hands).
+        if (bedWarsActive && (mode == ScopeOverlay.ScopeMode.AUTO || !scopeActive)) {
+            while (ScopeKeys.ZERO_INCREASE.consumeClick()) {
+                BedWarsOverlay.increaseRadarScale();
+            }
+            while (ScopeKeys.ZERO_DECREASE.consumeClick()) {
+                BedWarsOverlay.decreaseRadarScale();
+            }
+            return;
+        }
+
+        if (scopeActive && mode == ScopeOverlay.ScopeMode.MANUAL) {
+            while (ScopeKeys.ZERO_INCREASE.consumeClick()) {
+                ScopeConfig.ZERO_DISTANCE.set(Math.min(200, ScopeConfig.ZERO_DISTANCE.get() + 5));
+            }
+            while (ScopeKeys.ZERO_DECREASE.consumeClick()) {
+                ScopeConfig.ZERO_DISTANCE.set(Math.max(10, ScopeConfig.ZERO_DISTANCE.get() - 5));
+            }
+            return;
+        }
+
+        // Consume clicks in other contexts so keypresses don't spill into later state changes.
+        while (ScopeKeys.ZERO_INCREASE.consumeClick()) { }
+        while (ScopeKeys.ZERO_DECREASE.consumeClick()) { }
     }
 
 }
