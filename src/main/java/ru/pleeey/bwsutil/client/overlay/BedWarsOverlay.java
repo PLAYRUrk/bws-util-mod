@@ -28,20 +28,23 @@ public final class BedWarsOverlay {
 
     private static boolean enabled = false;
 
-    public static void toggleEnabled() { enabled = !enabled; }
+    public static void toggleEnabled() {
+        enabled = !enabled;
+        resetCache();
+    }
     public static boolean isEnabled()  { return enabled; }
 
     private BedWarsOverlay() {}
 
     // ── Константы панели ─────────────────────────────────────────────────────
 
-    private static final int PANEL_W     = 168;
-    private static final int ROW_H       = 11;
-    private static final int PAD         = 4;
+    private static final int PANEL_W     = 208;
+    private static final int ROW_H       = 13;
+    private static final int PAD         = 6;
     private static final int MAX_ENEMIES = 6;
     private static final int MAX_TEAM    = 4;
     private static final int DANGER_M    = 15;
-    private static final long HUD_CACHE_TTL_MS = 120_000L;
+    private static final long HUD_CACHE_TTL_MS = 30_000L;
 
     // ── Кровати: кеш результатов сканирования ───────────────────────────────
 
@@ -102,6 +105,21 @@ public final class BedWarsOverlay {
 
     private static List<TeamStat> cachedTeamStats = new ArrayList<>();
     private static long cachedTeamStatsAtMs = 0L;
+
+    private static void resetCache() {
+        cachedEnemyViews = new ArrayList<>();
+        cachedTeamViews = new ArrayList<>();
+        cachedPlayersAtMs = 0L;
+
+        cachedTeamStats = new ArrayList<>();
+        cachedTeamStatsAtMs = 0L;
+
+        bedData.clear();
+        bedScanTick = 0;
+        scanState.active = false;
+        scanState.center = BlockPos.ZERO;
+        lastBedScanCompletedAtMs = 0L;
+    }
 
     // ── Периодическое сканирование кроватей (вызывается из ClientGameEvents) ─
 
@@ -257,6 +275,12 @@ public final class BedWarsOverlay {
             ((myTeam != null && myTeam.equals(t)) ? teammates : enemies).add(p);
         }
 
+        // Heuristic for solo/1v8 modes: some servers have imperfect scoreboard team mapping.
+        // If it's clearly "one vs many", hide TEAM section to avoid showing wrong allies.
+        if (enemies.size() >= 6 && teammates.size() <= 4) {
+            teammates.clear();
+        }
+
         // Stable order prevents row jumping/flicker when enemies start/stop drawing bow.
         enemies.sort(Comparator
             .comparingDouble(self::distanceTo)
@@ -308,13 +332,55 @@ public final class BedWarsOverlay {
         int y = panelY + PAD;
 
         // Заголовок
-        txt(g, mc, "◉ BEDWARS", panelX + PAD, y, 0xFFFFFFFF);
+        String title = "◉ BEDWARS";
+        int titleX = panelX + PAD;
+        txt(g, mc, title, titleX, y, 0xFFFFFFFF);
         boolean useCacheAny = useCachedPlayers || useCachedTeamStats;
         String freshness = freshnessLabel(useCacheAny);
-        txt(g, mc, freshness, panelX + 66, y, freshnessColor(useCacheAny));
+        int rightEdgeX = panelX + PANEL_W - PAD;
+
+        int freshnessX = titleX + mc.font.width(title) + 8;
+        int gap = 4;
+        int charW = Math.max(1, mc.font.width("m"));
+
+        // Hint on the right may collide with freshness; shorten one of them to keep a clean header line.
+        String hint = "";
         if (!enemyViews.isEmpty()) {
-            String hint = enemyViews.size() + " hostile" + (useCachedPlayers ? " [cache]" : "");
-            txt(g, mc, hint, panelX + PANEL_W - PAD - mc.font.width(hint), y, 0xFFFF5555);
+            hint = enemyViews.size() + " hostile" + (useCachedPlayers ? " [cache]" : "");
+        }
+
+        int freshnessMinX = titleX + mc.font.width(title) + 2;
+        freshnessX = Math.max(freshnessX, freshnessMinX);
+
+        if (!hint.isEmpty()) {
+            int hintW = mc.font.width(hint);
+            int hintX = rightEdgeX - hintW;
+            int freshnessRightLimit = hintX - gap;
+
+            int availFreshW = freshnessRightLimit - freshnessX;
+            if (availFreshW <= 0) {
+                freshness = cap(freshness, Math.max(3, 3)); // fallback; prevents overlap
+            } else if (mc.font.width(freshness) > availFreshW) {
+                int maxCharsFresh = Math.max(3, availFreshW / charW);
+                freshness = cap(freshness, maxCharsFresh);
+            }
+
+            // Recompute after possible shortening.
+            int freshnessW = mc.font.width(freshness);
+            int availHintW = rightEdgeX - (freshnessX + freshnessW + gap);
+            if (availHintW <= 0) {
+                hint = "";
+            } else if (mc.font.width(hint) > availHintW) {
+                int maxCharsHint = Math.max(3, availHintW / charW);
+                hint = cap(hint, maxCharsHint);
+            }
+        }
+
+        if (!freshness.isEmpty()) {
+            txt(g, mc, freshness, freshnessX, y, freshnessColor(useCacheAny));
+        }
+        if (!hint.isEmpty()) {
+            txt(g, mc, hint, rightEdgeX - mc.font.width(hint), y, 0xFFFF5555);
         }
         y += ROW_H;
 
@@ -325,7 +391,7 @@ public final class BedWarsOverlay {
             txt(g, mc, "ENEMIES (" + enemyViews.size() + ")", panelX + PAD, y, 0xFFFF5555);
             y += ROW_H;
             for (int i = 0; i < Math.min(enemyViews.size(), MAX_ENEMIES); i++) {
-                playerRow(g, mc, enemyViews.get(i), panelX + PAD, y);
+                playerRow(g, mc, enemyViews.get(i), panelX + PAD, y, panelX + PANEL_W - PAD);
                 y += ROW_H;
             }
         }
@@ -335,7 +401,7 @@ public final class BedWarsOverlay {
             txt(g, mc, "TEAM (" + teamViews.size() + ")", panelX + PAD, y, 0xFF55FF55);
             y += ROW_H;
             for (int i = 0; i < Math.min(teamViews.size(), MAX_TEAM); i++) {
-                playerRow(g, mc, teamViews.get(i), panelX + PAD, y);
+                playerRow(g, mc, teamViews.get(i), panelX + PAD, y, panelX + PANEL_W - PAD);
                 y += ROW_H;
             }
         }
@@ -348,26 +414,42 @@ public final class BedWarsOverlay {
 
     // ── Строка игрока ────────────────────────────────────────────────────────
 
-    private static void playerRow(GuiGraphics g, Minecraft mc, PlayerView row, int x, int y) {
+    private static void playerRow(GuiGraphics g, Minecraft mc, PlayerView row, int x, int y, int rightX) {
         int arrowCol = row.distM() < DANGER_M ? 0xFFFF5555 : 0xFFCCCCCC;
-        int hpCol    = row.hpPct() > 0.6f ? 0xFF55FF55 : row.hpPct() > 0.3f ? 0xFFFFFF55 : 0xFFFF5555;
         int distCol  = row.distM() < DANGER_M ? 0xFFFF5555 : row.distM() < 30 ? 0xFFFFAA00 : 0xFFAAAAAA;
 
         txt(g, mc, row.arrow(), x, y, arrowCol);
         txt(g, mc, row.name() + (row.aiming() ? "!" : ""), x + 8, y,
             row.aiming() ? 0xFFFF4444 : row.nameColor());
 
-        // HP бар 24×5px
-        int bx = x + 48, by = y + 2, bw = 24, bh = 5;
-        int fill = Math.max(0, (int)(row.hpPct() * bw));
-        g.fill(bx - 1, by - 1, bx + bw + 1, by + bh + 1, 0xFF000000);
-        g.fill(bx, by, bx + bw, by + bh, 0x33FFFFFF);
-        if (fill > 0) g.fill(bx, by, bx + fill, by + bh, hpCol);
+        String armorTxt = row.armor().isEmpty() ? "" : "[" + row.armor() + "]";
+        String moveTxt = row.moveArrow();
+        String distTxt = row.distTxt();
 
-        txt(g, mc, row.hpValue() + "", x + 74, y, hpCol);
-        txt(g, mc, row.distTxt(), x + 88, y, distCol);
-        if (!row.moveArrow().isEmpty()) txt(g, mc, row.moveArrow(), x + 124, y, 0xFFAAAAFF);
-        if (!row.armor().isEmpty()) txt(g, mc, "[" + row.armor() + "]", x + 130, y, armorColor(row.armor()));
+        int cursor = rightX;
+        if (!armorTxt.isEmpty()) {
+            cursor -= mc.font.width(armorTxt);
+            txt(g, mc, armorTxt, cursor, y, armorColor(row.armor()));
+            cursor -= 4;
+        }
+        if (!moveTxt.isEmpty()) {
+            cursor -= mc.font.width(moveTxt);
+            txt(g, mc, moveTxt, cursor, y, 0xFFAAAAFF);
+            cursor -= 4;
+        }
+
+        // Ensure distance text doesn't overlap the left-side name/arrow area.
+        int distMaxW = Math.max(0, cursor - (x + 84));
+        if (mc.font.width(distTxt) > distMaxW) {
+            // Prefer keeping base distance visible; drop ETA suffix first.
+            int etaIdx = distTxt.indexOf(" 0.");
+            if (etaIdx > 0) distTxt = distTxt.substring(0, etaIdx).trim();
+            if (mc.font.width(distTxt) > distMaxW) {
+                distTxt = cap(distTxt, Math.max(4, distMaxW / Math.max(1, mc.font.width("m"))));
+            }
+        }
+        cursor -= mc.font.width(distTxt);
+        txt(g, mc, distTxt, cursor, y, distCol);
     }
 
     private static List<PlayerView> buildPlayerViews(Minecraft mc, LocalPlayer self, List<AbstractClientPlayer> players) {
@@ -850,9 +932,21 @@ public final class BedWarsOverlay {
     }
 
     private static String armorChar(AbstractClientPlayer p) {
-        ItemStack chest = p.getItemBySlot(EquipmentSlot.CHEST);
-        if (chest.isEmpty()) return "";
-        Identifier id = BuiltInRegistries.ITEM.getKey(chest.getItem());
+        String best = "";
+        for (EquipmentSlot slot : new EquipmentSlot[] {
+                EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET
+        }) {
+            String tier = armorTier(p.getItemBySlot(slot));
+            if (armorScoreOf(tier) > armorScoreOf(best)) {
+                best = tier;
+            }
+        }
+        return best;
+    }
+
+    private static String armorTier(ItemStack item) {
+        if (item == null || item.isEmpty()) return "";
+        Identifier id = BuiltInRegistries.ITEM.getKey(item.getItem());
         if (id == null) return "";
         String path = id.getPath();
         if (path.startsWith("netherite")) return "N";

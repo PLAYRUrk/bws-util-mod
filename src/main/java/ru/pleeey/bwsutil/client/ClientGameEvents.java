@@ -1,12 +1,16 @@
 package ru.pleeey.bwsutil.client;
 
 import ru.pleeey.bwsutil.BwsUtilMod;
+import ru.pleeey.bwsutil.client.autoclicker.AutoclickerBridgeClient;
 import ru.pleeey.bwsutil.client.keybind.ScopeKeys;
 import ru.pleeey.bwsutil.client.overlay.BedWarsOverlay;
 import ru.pleeey.bwsutil.client.overlay.ScopeOverlay;
 import ru.pleeey.bwsutil.client.screen.ScopeConfigScreen;
 import ru.pleeey.bwsutil.config.ScopeConfig;
 import net.minecraft.client.Minecraft;
+import net.minecraft.world.item.BowItem;
+import net.minecraft.world.item.ItemUseAnimation;
+import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.listener.SubscribeEvent;
@@ -18,9 +22,22 @@ public class ClientGameEvents {
     private ClientGameEvents() {}
 
     @SubscribeEvent
+    public static void onClientTickPre(TickEvent.ClientTickEvent.Pre event) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null) {
+            // Important: if we stop ticking (main menu / disconnect), release any previous suppression
+            // so AUT-CLK doesn't stay forced OFF when launched after Minecraft.
+            AutoclickerBridgeClient.setInputSuppression(false, false);
+            return;
+        }
+        syncAutoclickerState(mc);
+    }
+
+    @SubscribeEvent
     public static void onClientTickPost(TickEvent.ClientTickEvent.Post event) {
         Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null || mc.screen != null) return;
+        if (mc.player == null) return;
+        if (mc.screen != null) return;
 
         if (ScopeKeys.OPEN_CONFIG.consumeClick()) {
             mc.setScreen(new ScopeConfigScreen());
@@ -45,5 +62,24 @@ public class ClientGameEvents {
         ScopeOverlay.tick(mc, mc.player);
         // Сканирование кроватей BedWars раз в 3 секунды
         BedWarsOverlay.tick(mc);
+
     }
+
+    private static void syncAutoclickerState(Minecraft mc) {
+        boolean isGuiOpen = mc.screen != null;
+        boolean isBowInMainHand = mc.player.getMainHandItem().getItem() instanceof BowItem;
+        boolean isConsumableInHand = isConsumable(mc.player.getMainHandItem())
+                || isConsumable(mc.player.getOffhandItem());
+
+        boolean suppressRmb = isGuiOpen || isBowInMainHand || isConsumableInHand;
+        boolean suppressLmb = isGuiOpen || isBowInMainHand;
+        AutoclickerBridgeClient.setInputSuppression(suppressLmb, suppressRmb);
+        AutoclickerBridgeClient.tickSuppressionPulse();
+    }
+
+    private static boolean isConsumable(ItemStack stack) {
+        ItemUseAnimation anim = stack.getUseAnimation();
+        return anim == ItemUseAnimation.EAT || anim == ItemUseAnimation.DRINK;
+    }
+
 }
