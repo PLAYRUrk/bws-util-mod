@@ -77,20 +77,24 @@ public final class AutoclickerBridgeClient {
             if (suppressLmbByMod) {
                 sendLmbControl(false);
             } else {
-                Boolean shouldRestoreLmb = lmbBeforeSuppression;
+                Boolean shouldRestoreLmb = lmbBeforeSuppression != null
+                    ? lmbBeforeSuppression
+                    : getDesiredLmbEnabled();
                 lmbBeforeSuppression = null;
-                if (Boolean.TRUE.equals(shouldRestoreLmb)) {
-                    sendLmbControl(true);
+                if (shouldRestoreLmb != null) {
+                    sendLmbControl(shouldRestoreLmb);
                 }
             }
 
             if (suppressRmbByMod) {
                 sendRmbControl(false);
             } else {
-                Boolean shouldRestoreRmb = rmbBeforeSuppression;
+                Boolean shouldRestoreRmb = rmbBeforeSuppression != null
+                    ? rmbBeforeSuppression
+                    : getDesiredRmbEnabled();
                 rmbBeforeSuppression = null;
-                if (Boolean.TRUE.equals(shouldRestoreRmb)) {
-                    sendRmbControl(true);
+                if (shouldRestoreRmb != null) {
+                    sendRmbControl(shouldRestoreRmb);
                 }
             }
         }
