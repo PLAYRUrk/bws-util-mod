@@ -66,6 +66,10 @@ public final class BedWarsOverlay {
     private static final int RADAR_MAX_CONSTRUCTION_MARKS = 180;
     private static final long FIREBALL_SOUND_COOLDOWN_MS = 900L;
     private static final long VOID_SOUND_COOLDOWN_MS = 1_200L;
+    private static final double RETREAT_SCAN_RADIUS = 26.0;
+    private static final int RETREAT_SAMPLE_DIRECTIONS = 12;
+    private static final double RETREAT_SAMPLE_DISTANCE = 7.0;
+    private static final double RETREAT_SAMPLE_DISTANCE_FAR = 12.0;
     private static int radarRangeBlocks = RADAR_RANGE_BLOCKS_DEFAULT;
 
     // ── Кровати: кеш результатов сканирования ───────────────────────────────
@@ -143,6 +147,9 @@ public final class BedWarsOverlay {
     private static String bridgeAlertText = "";
     private static int bridgeAlertColor = 0xFF55FF55;
     private static boolean bridgeAlertDanger;
+    private static String retreatAlertText = "";
+    private static int retreatAlertColor = 0xFFFF6666;
+    private static boolean retreatAlertDanger;
     private static long lastFireballWarnAtMs;
     private static long lastVoidWarnAtMs;
     private static String cachedFreshnessLabel = "LIVE";
@@ -170,6 +177,8 @@ public final class BedWarsOverlay {
         bridgeAlertText = "";
         fireballAlertDanger = false;
         bridgeAlertDanger = false;
+        retreatAlertText = "";
+        retreatAlertDanger = false;
         lastFireballWarnAtMs = 0L;
         lastVoidWarnAtMs = 0L;
         cachedFreshnessLabel = "LIVE";
@@ -510,6 +519,8 @@ public final class BedWarsOverlay {
         y += ROW_H;
 
         if (danger) drawCenteredDanger(g, mc, priorityTarget);
+        drawFireballCrosshairWarning(g, mc);
+        drawSafeRetreatVector(g, mc);
 
         // Враги
         if (!enemyViews.isEmpty()) {
@@ -941,6 +952,7 @@ public final class BedWarsOverlay {
             bridgeAlertText = "";
             bridgeAlertDanger = false;
         }
+        evaluateSafeRetreat(mc, self);
     }
 
     private static void evaluateFireballThreat(Minecraft mc, LocalPlayer self) {
@@ -986,23 +998,26 @@ public final class BedWarsOverlay {
         if (isAirAt(mc, base.getX(), base.getY() - 1, base.getZ() - 1)) sideAir++;
         boolean edgeRisk = sideAir >= 2;
         double speed = self.getDeltaMovement().horizontalDistance();
+        boolean moving = speed > 0.025;
         int predictSteps = speed > 0.11 ? 6 : speed > 0.06 ? 4 : 3;
         boolean predictedVoidDanger = false;
         Vec3 move = self.getDeltaMovement();
-        Vec3 look = self.getLookAngle();
-        double dirX = Math.abs(move.x) + Math.abs(move.z) > 0.001 ? move.x : look.x * 0.12;
-        double dirZ = Math.abs(move.x) + Math.abs(move.z) > 0.001 ? move.z : look.z * 0.12;
-        for (int i = 1; i <= predictSteps; i++) {
-            int px = Mth.floor(self.getX() + dirX * i * 2.3);
-            int pz = Mth.floor(self.getZ() + dirZ * i * 2.3);
-            BlockPos probe = new BlockPos(px, base.getY(), pz);
-            if (isVoidColumn(mc, probe, 12)) {
-                predictedVoidDanger = true;
-                break;
+        if (moving) {
+            double dirX = move.x;
+            double dirZ = move.z;
+            for (int i = 1; i <= predictSteps; i++) {
+                int px = Mth.floor(self.getX() + dirX * i * 2.3);
+                int pz = Mth.floor(self.getZ() + dirZ * i * 2.3);
+                BlockPos probe = new BlockPos(px, base.getY(), pz);
+                if (isVoidColumn(mc, probe, 12)) {
+                    predictedVoidDanger = true;
+                    break;
+                }
             }
         }
 
-        bridgeAlertDanger = (overVoid || predictedVoidDanger) && (speed > 0.030 || self.fallDistance > 0.8f || edgeRisk || predictedVoidDanger);
+        bridgeAlertDanger = moving && (overVoid || predictedVoidDanger)
+            && (speed > 0.030 || self.fallDistance > 0.8f || edgeRisk || predictedVoidDanger);
         if (bridgeAlertDanger) {
             bridgeAlertText = predictedVoidDanger
                 ? String.format(Locale.ROOT, "BRIDGE RISK AHEAD %.0fm", Math.max(2.0, speed * 38.0))
@@ -1028,8 +1043,8 @@ public final class BedWarsOverlay {
     }
 
     private static void drawContextHelpers(GuiGraphics g, Minecraft mc) {
-        List<String> lines = new ArrayList<>(2);
-        List<Integer> colors = new ArrayList<>(2);
+        List<String> lines = new ArrayList<>(3);
+        List<Integer> colors = new ArrayList<>(3);
         if (ScopeConfig.FIREBALL_THREAT_ENABLED.get() && !fireballAlertText.isEmpty()) {
             lines.add(fireballAlertText);
             colors.add(fireballAlertColor);
@@ -1037,6 +1052,10 @@ public final class BedWarsOverlay {
         if (ScopeConfig.BRIDGE_HELPER_ENABLED.get() && !bridgeAlertText.isEmpty()) {
             lines.add(bridgeAlertText);
             colors.add(bridgeAlertColor);
+        }
+        if (retreatAlertDanger && !retreatAlertText.isEmpty()) {
+            lines.add(retreatAlertText);
+            colors.add(retreatAlertColor);
         }
         if (lines.isEmpty()) return;
 
@@ -1049,6 +1068,50 @@ public final class BedWarsOverlay {
         for (int i = 0; i < lines.size(); i++) {
             txt(g, mc, lines.get(i), x, y + i * 12, colors.get(i));
         }
+    }
+
+    private static void drawFireballCrosshairWarning(GuiGraphics g, Minecraft mc) {
+        if (!ScopeConfig.FIREBALL_THREAT_ENABLED.get() || !fireballAlertDanger || fireballAlertText.isEmpty()) return;
+        long t = System.currentTimeMillis();
+        if (((t / 220L) % 2L) == 0L) return; // blink
+
+        int sw = mc.getWindow().getGuiScaledWidth();
+        int sh = mc.getWindow().getGuiScaledHeight();
+        boolean scopeActive = ScopeOverlay.isScopeInputActive(mc);
+        int y = sh / 2 + (scopeActive ? 52 : 30);
+        String label = "FIREBALL INBOUND";
+        int w = mc.font.width(label);
+        int x = (sw - w) / 2;
+
+        g.fill(x - 16, y - 3, x + w + 8, y + 10, 0xAA5A1200);
+        // Small "fireball" icon at left
+        g.fill(x - 12, y + 1, x - 6, y + 7, 0xFFFFAA33);
+        g.fill(x - 11, y + 2, x - 7, y + 6, 0xFFFF5533);
+        txt(g, mc, label, x, y, 0xFFFFE066);
+    }
+
+    private static void drawSafeRetreatVector(GuiGraphics g, Minecraft mc) {
+        if (!retreatAlertDanger || retreatAlertText.isEmpty()) return;
+        int sw = mc.getWindow().getGuiScaledWidth();
+        int sh = mc.getWindow().getGuiScaledHeight();
+        boolean scopeActive = ScopeOverlay.isScopeInputActive(mc);
+        int y = sh / 2 + (scopeActive ? 70 : 46);
+        if (ScopeConfig.FIREBALL_THREAT_ENABLED.get() && fireballAlertDanger) {
+            y += 16;
+        }
+        y = Math.min(y, sh - 54);
+
+        long t = System.currentTimeMillis();
+        boolean pulse = ((t / 180L) % 2L) == 0L;
+        String label = retreatAlertText;
+        int w = mc.font.width(label);
+        int x = (sw - w) / 2;
+        int bg = pulse ? 0xAA2F0000 : 0xAA4A0000;
+        int fg = pulse ? 0xFFFF8855 : retreatAlertColor;
+
+        g.fill(x - 12, y - 4, x + w + 12, y + 11, bg);
+        g.fill(x - 10, y - 2, x + w + 10, y + 10, 0x66200000);
+        txt(g, mc, label, x, y, fg);
     }
 
     private static void playWarningSound(Minecraft mc, boolean fireball, long nowMs) {
@@ -1077,6 +1140,140 @@ public final class BedWarsOverlay {
         BlockPos pos = new BlockPos(x, y, z);
         if (!mc.level.isLoaded(pos)) return true;
         return mc.level.getBlockState(pos).isAir();
+    }
+
+    private static void evaluateSafeRetreat(Minecraft mc, LocalPlayer self) {
+        retreatAlertDanger = false;
+        retreatAlertText = "";
+        retreatAlertColor = 0xFFFF6666;
+
+        double selfHp = self.getHealth() + self.getAbsorptionAmount();
+        if (selfHp <= 0.1) return;
+
+        AABB box = self.getBoundingBox().inflate(RETREAT_SCAN_RADIUS, 8.0, RETREAT_SCAN_RADIUS);
+        PlayerTeam myTeam = mc.level.getScoreboard().getPlayersTeam(self.getScoreboardName());
+        List<AbstractClientPlayer> threats = new ArrayList<>();
+        int nearbyAllies = 0;
+
+        for (Player raw : mc.level.players()) {
+            if (!(raw instanceof AbstractClientPlayer p)) continue;
+            if (p == self || !p.isAlive() || p.isSpectator()) continue;
+            if (!box.intersects(p.getBoundingBox())) continue;
+            PlayerTeam team = mc.level.getScoreboard().getPlayersTeam(p.getScoreboardName());
+            if (myTeam != null && myTeam.equals(team)) {
+                if (self.distanceTo(p) <= 17.0f) nearbyAllies++;
+                continue;
+            }
+            if (self.distanceTo(p) <= RETREAT_SCAN_RADIUS) threats.add(p);
+        }
+        if (threats.isEmpty()) return;
+
+        int closeThreats = 0;
+        double enemyHpSum = 0.0;
+        double pressure = 0.0;
+        Vec3 pressureVec = Vec3.ZERO;
+        for (AbstractClientPlayer enemy : threats) {
+            double dist = Math.max(0.8, self.distanceTo(enemy));
+            if (dist <= 16.0) closeThreats++;
+            double enemyHp = enemy.getHealth() + enemy.getAbsorptionAmount();
+            enemyHpSum += enemyHp;
+            double eta = etaToContact(self, enemy, dist);
+            double etaFactor = (eta > 0.0 && eta < 8.0) ? (8.0 - eta) / 8.0 : 0.0;
+            double weight = (1.0 / dist) * (1.0 + etaFactor + (isAiming(enemy) ? 0.35 : 0.0));
+            pressure += weight;
+            Vec3 toEnemy = enemy.position().subtract(self.position());
+            Vec3 flat = new Vec3(toEnemy.x, 0.0, toEnemy.z);
+            if (flat.lengthSqr() > 1.0e-6) {
+                pressureVec = pressureVec.add(flat.normalize().scale(weight));
+            }
+        }
+
+        int effectiveEnemies = Math.max(closeThreats, threats.size());
+        int allySupport = nearbyAllies + 1;
+        double enemyToSelfHpRatio = enemyHpSum / Math.max(1.0, selfHp);
+        boolean outnumbered = effectiveEnemies > allySupport;
+        boolean lowHp = selfHp <= 10.0 && effectiveEnemies >= 1;
+        boolean hpDisadvantage = enemyToSelfHpRatio >= 1.55 && effectiveEnemies >= 2;
+        boolean heavyPressure = pressure >= 0.42 && effectiveEnemies >= 2;
+        boolean likelyLosing = outnumbered || lowHp || hpDisadvantage || heavyPressure;
+        if (!likelyLosing) return;
+
+        Vec3 retreatDir = chooseSafeRetreatDirection(mc, self, pressureVec, threats);
+        if (retreatDir.lengthSqr() < 1.0e-6) return;
+        String arrow = directionArrowFromVector(self, retreatDir);
+        String reason;
+        if (outnumbered) {
+            reason = String.format(Locale.ROOT, "%dv%d", effectiveEnemies, allySupport);
+        } else if (lowHp) {
+            reason = String.format(Locale.ROOT, "HP %.0f", selfHp);
+        } else if (hpDisadvantage) {
+            reason = String.format(Locale.ROOT, "HP x%.1f", enemyToSelfHpRatio);
+        } else {
+            reason = "pressure";
+        }
+
+        retreatAlertDanger = true;
+        retreatAlertColor = (effectiveEnemies >= 3 || selfHp <= 7.0) ? 0xFFFF4444 : 0xFFFFAA55;
+        retreatAlertText = "RETREAT " + arrow + "  " + reason;
+    }
+
+    private static Vec3 chooseSafeRetreatDirection(Minecraft mc, LocalPlayer self, Vec3 pressureVec,
+                                                   List<AbstractClientPlayer> threats) {
+        Vec3 fallback;
+        if (pressureVec.lengthSqr() < 1.0e-6) {
+            Vec3 look = self.getLookAngle();
+            fallback = new Vec3(-look.x, 0.0, -look.z);
+        } else {
+            fallback = new Vec3(-pressureVec.x, 0.0, -pressureVec.z);
+        }
+        if (fallback.lengthSqr() < 1.0e-6) {
+            fallback = new Vec3(0.0, 0.0, 1.0);
+        }
+        fallback = fallback.normalize();
+
+        Vec3 bestDir = fallback;
+        double bestScore = scoreRetreatDirection(mc, self, fallback, threats);
+        for (int i = 0; i < RETREAT_SAMPLE_DIRECTIONS; i++) {
+            double angle = (Math.PI * 2.0 * i) / RETREAT_SAMPLE_DIRECTIONS;
+            Vec3 dir = new Vec3(Math.cos(angle), 0.0, Math.sin(angle));
+            double score = scoreRetreatDirection(mc, self, dir, threats);
+            if (score > bestScore) {
+                bestScore = score;
+                bestDir = dir;
+            }
+        }
+        return bestDir;
+    }
+
+    private static double scoreRetreatDirection(Minecraft mc, LocalPlayer self, Vec3 dir,
+                                                List<AbstractClientPlayer> threats) {
+        dir = dir.normalize();
+        BlockPos near = new BlockPos(
+            Mth.floor(self.getX() + dir.x * RETREAT_SAMPLE_DISTANCE),
+            self.blockPosition().getY(),
+            Mth.floor(self.getZ() + dir.z * RETREAT_SAMPLE_DISTANCE)
+        );
+        BlockPos far = new BlockPos(
+            Mth.floor(self.getX() + dir.x * RETREAT_SAMPLE_DISTANCE_FAR),
+            self.blockPosition().getY(),
+            Mth.floor(self.getZ() + dir.z * RETREAT_SAMPLE_DISTANCE_FAR)
+        );
+
+        double safety = 0.0;
+        if (!isVoidColumn(mc, near, 12)) safety += 1.4;
+        if (!isVoidColumn(mc, far, 12)) safety += 0.9;
+        if (!isAirAt(mc, near.getX(), near.getY() - 1, near.getZ())) safety += 0.6;
+
+        for (AbstractClientPlayer enemy : threats) {
+            Vec3 fromEnemy = self.position().subtract(enemy.position());
+            Vec3 away = new Vec3(fromEnemy.x, 0.0, fromEnemy.z);
+            if (away.lengthSqr() < 1.0e-6) continue;
+            away = away.normalize();
+            double align = dir.dot(away); // >0 means direction moves away from enemy
+            double dist = Math.max(1.0, self.distanceTo(enemy));
+            safety += align * (10.0 / dist);
+        }
+        return safety;
     }
 
     private static String directionArrowFromVector(LocalPlayer self, Vec3 toTarget) {
