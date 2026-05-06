@@ -62,12 +62,16 @@ public class ClientGameEvents {
 
     private static void syncAutoclickerState(Minecraft mc) {
         boolean isGuiOpen = mc.screen != null;
-        boolean isBowInMainHand = mc.player.getMainHandItem().getItem() instanceof BowItem;
-        boolean isConsumableInHand = isConsumable(mc.player.getMainHandItem())
-                || isConsumable(mc.player.getOffhandItem());
+        boolean isBowInHands = mc.player.getMainHandItem().getItem() instanceof BowItem
+                || mc.player.getOffhandItem().getItem() instanceof BowItem;
+        boolean isConsumableInMainHand = isConsumable(mc.player.getMainHandItem());
+        boolean isUsingOffhandConsumable = mc.player.isUsingItem()
+                && isConsumable(mc.player.getUseItem())
+                && mc.player.getOffhandItem() == mc.player.getUseItem();
 
-        boolean suppressRmb = isGuiOpen || isBowInMainHand || isConsumableInHand;
-        boolean suppressLmb = isGuiOpen || isBowInMainHand;
+        // Legacy behavior requested: if bow is in hand, suppress both channels.
+        boolean suppressRmb = isGuiOpen || isBowInHands || isConsumableInMainHand || isUsingOffhandConsumable;
+        boolean suppressLmb = isGuiOpen || isBowInHands;
         AutoclickerBridgeClient.setInputSuppression(suppressLmb, suppressRmb);
         AutoclickerBridgeClient.tickSuppressionPulse();
     }

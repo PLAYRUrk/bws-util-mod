@@ -47,7 +47,9 @@ public final class BedWarsOverlay {
     private static final int THREAT_ROW_SHIFT_X = 14;
     private static final int THREAT_ROW_EXTRA_BG = 26;
     private static final long HUD_CACHE_TTL_MS = 30_000L;
-    private static final double ETA_SMOOTH_ALPHA = 0.20;
+    private static final long HUD_LIVE_RECOMPUTE_INTERVAL_MS = 120L;
+    private static final double ETA_SMOOTH_ALPHA = 0.14;
+    private static final double ETA_MAX_STEP_PER_TICK = 0.10;
     private static final int RADAR_SIZE = 92;
     private static final int RADAR_RANGE_BLOCKS_DEFAULT = 48;
     private static final int RADAR_RANGE_BLOCKS_MIN = 24;
@@ -55,6 +57,9 @@ public final class BedWarsOverlay {
     private static final int RADAR_RANGE_BLOCKS_STEP = 4;
     private static final int[] RADAR_RANGE_MARKS = new int[] {10, 20, 30};
     private static final int RADAR_Y_RANGE = 10;
+    private static final long RADAR_CONSTRUCTIONS_CACHE_MS = 420L;
+    private static final int RADAR_CACHE_MOVE_THRESHOLD = 4;
+    private static final int RADAR_MAX_CONSTRUCTION_MARKS = 180;
     private static int radarRangeBlocks = RADAR_RANGE_BLOCKS_DEFAULT;
 
     // ── Кровати: кеш результатов сканирования ───────────────────────────────
@@ -108,21 +113,30 @@ public final class BedWarsOverlay {
         double etaSec,
         double threatScore
     ) {}
+    private record RadarConstructionSample(int dx, int dz, int color) {}
 
     private static List<PlayerView> cachedEnemyViews = new ArrayList<>();
     private static List<PlayerView> cachedTeamViews  = new ArrayList<>();
     private static long cachedPlayersAtMs = 0L;
+    private static long lastHudLiveRecomputeAtMs = 0L;
     private static long lastBedScanCompletedAtMs = 0L;
     private static final Map<UUID, Double> etaSmoothedByPlayer = new HashMap<>();
     private static final Map<UUID, Long> etaSeenAtMs = new HashMap<>();
 
     private static List<TeamStat> cachedTeamStats = new ArrayList<>();
     private static long cachedTeamStatsAtMs = 0L;
+    private static List<RadarConstructionSample> cachedRadarConstructions = new ArrayList<>();
+    private static long cachedRadarConstructionsAtMs = 0L;
+    private static int radarCacheCenterX;
+    private static int radarCacheCenterY;
+    private static int radarCacheCenterZ;
+    private static int radarCacheRangeBlocks = RADAR_RANGE_BLOCKS_DEFAULT;
 
     private static void resetCache() {
         cachedEnemyViews = new ArrayList<>();
         cachedTeamViews = new ArrayList<>();
         cachedPlayersAtMs = 0L;
+        lastHudLiveRecomputeAtMs = 0L;
 
         cachedTeamStats = new ArrayList<>();
         cachedTeamStatsAtMs = 0L;
@@ -135,16 +149,20 @@ public final class BedWarsOverlay {
         radarRangeBlocks = RADAR_RANGE_BLOCKS_DEFAULT;
         etaSmoothedByPlayer.clear();
         etaSeenAtMs.clear();
+        cachedRadarConstructions = new ArrayList<>();
+        cachedRadarConstructionsAtMs = 0L;
     }
 
     public static void increaseRadarScale() {
         // Larger scale (zoom-in) = smaller world range.
         radarRangeBlocks = Math.max(RADAR_RANGE_BLOCKS_MIN, radarRangeBlocks - RADAR_RANGE_BLOCKS_STEP);
+        cachedRadarConstructionsAtMs = 0L;
     }
 
     public static void decreaseRadarScale() {
         // Smaller scale (zoom-out) = larger world range.
         radarRangeBlocks = Math.min(RADAR_RANGE_BLOCKS_MAX, radarRangeBlocks + RADAR_RANGE_BLOCKS_STEP);
+        cachedRadarConstructionsAtMs = 0L;
     }
 
     // ── Периодическое сканирование кроватей (вызывается из ClientGameEvents) ─
@@ -237,13 +255,12 @@ public final class BedWarsOverlay {
     }
 
     /**
-     * Оценивает тип защиты только по полной оболочке вокруг кровати:
-     * все стороны (кроме нижней) должны быть закрыты одним типом материала.
-     * Если оболочка неполная или смешанная, complete=false (предыдущее стабильное значение сохраняется).
+     * Оценивает тип защиты по непосредственной оболочке кровати:
+     * только боковые стороны + верх (без нижнего слоя).
+     * Если покрытие слабое, считаем, что выраженной защиты нет ("---").
      */
     private static DefenseSample calcDefense(Minecraft mc, BlockPos bedHead) {
         BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
-
         Set<BlockPos> bedParts = new LinkedHashSet<>();
         bedParts.add(bedHead.immutable());
         for (int ox = -1; ox <= 1; ox++) {
@@ -259,49 +276,58 @@ public final class BedWarsOverlay {
             }
         }
 
-        // Required shell positions: 4 horizontal sides + top for each bed part (no bottom).
-        int[][] shellDirs = {
-            { 1, 0, 0}, {-1, 0, 0},
-            { 0, 0, 1}, { 0, 0,-1},
-            { 0, 1, 0}
+        int[] tierCounts = new int[5]; // 1..4
+        int unknown = 0;
+        int shellSlots = 0;
+        int occupiedSlots = 0;
+        int[][] dirs = {
+            { 1, 0, 0 }, { -1, 0, 0 },
+            { 0, 0, 1 }, { 0, 0, -1 },
+            { 0, 1, 0 }
         };
-        Set<BlockPos> shell = new LinkedHashSet<>();
+        Set<BlockPos> shell = new HashSet<>();
         for (BlockPos part : bedParts) {
-            for (int[] d : shellDirs) {
-                BlockPos n = part.offset(d[0], d[1], d[2]);
-                if (!bedParts.contains(n)) {
-                    shell.add(n);
+            for (int[] d : dirs) {
+                BlockPos pos = part.offset(d[0], d[1], d[2]);
+                if (bedParts.contains(pos)) continue;
+                if (!shell.add(pos)) continue;
+                shellSlots++;
+                if (!mc.level.isLoaded(pos)) {
+                    unknown++;
+                    continue;
                 }
+                BlockState bs = mc.level.getBlockState(pos);
+                if (bs.isAir() || bs.getBlock() instanceof BedBlock) continue;
+                occupiedSlots++;
+                int tier = defenseTierByResistance(bs.getBlock().getExplosionResistance());
+                tierCounts[tier]++;
             }
         }
 
-        Integer shellTier = null;
-        for (BlockPos pos : shell) {
-            if (!mc.level.isLoaded(pos)) {
-                return new DefenseSample(0, false);
-            }
-            BlockState bs = mc.level.getBlockState(pos);
-            if (bs.isAir() || bs.getBlock() instanceof BedBlock) {
-                return new DefenseSample(0, false);
-            }
-            int tier = defenseTierByResistance(bs.getBlock().getExplosionResistance());
-            if (shellTier == null) {
-                shellTier = tier;
-            } else if (shellTier != tier) {
-                return new DefenseSample(0, false);
-            }
+        // Not enough direct shell coverage => treat as no defense, avoid stale "WOL".
+        if (shellSlots == 0) {
+            return new DefenseSample(0, true);
+        }
+        double coverage = occupiedSlots / (double) shellSlots;
+        if (coverage < 0.60) {
+            return new DefenseSample(0, true);
         }
 
-        if (shellTier == null) {
-            return new DefenseSample(0, false);
+        int bestTier = 1;
+        for (int t = 2; t <= 4; t++) {
+            if (tierCounts[t] > tierCounts[bestTier]) bestTier = t;
         }
-        int score = switch (shellTier) {
-            case 4 -> 180; // OBS
-            case 3 -> 110; // END
-            case 2 -> 55;  // TER
-            default -> 18; // WOL
+        // If shell is too mixed, keep conservative classification.
+        if (tierCounts[bestTier] < Math.max(2, (int) Math.ceil(occupiedSlots * 0.55))) {
+            return new DefenseSample(0, true);
+        }
+        int score = switch (bestTier) {
+            case 4 -> 180;
+            case 3 -> 110;
+            case 2 -> 55;
+            default -> 18;
         };
-        return new DefenseSample(score, true);
+        return new DefenseSample(score, unknown <= 2);
     }
 
     private static int defenseTierByResistance(float blastRes) {
@@ -357,15 +383,24 @@ public final class BedWarsOverlay {
             .thenComparing(p -> p.getUUID().toString()));
         teammates.sort(Comparator.comparingDouble(self::distanceTo));
 
-        List<PlayerView> liveEnemies = buildPlayerViews(mc, self, enemies);
-        List<PlayerView> liveTeam    = buildPlayerViews(mc, self, teammates);
+        long now = System.currentTimeMillis();
+        boolean shouldRecomputeLive =
+            (now - lastHudLiveRecomputeAtMs) >= HUD_LIVE_RECOMPUTE_INTERVAL_MS
+                || cachedEnemyViews.isEmpty()
+                || cachedTeamViews.isEmpty();
+
+        List<PlayerView> liveEnemies = shouldRecomputeLive ? buildPlayerViews(mc, self, enemies) : cachedEnemyViews;
+        List<PlayerView> liveTeam    = shouldRecomputeLive ? buildPlayerViews(mc, self, teammates) : cachedTeamViews;
         if (!liveEnemies.isEmpty()) {
             cachedEnemyViews = new ArrayList<>(liveEnemies);
-            cachedPlayersAtMs = System.currentTimeMillis();
+            cachedPlayersAtMs = now;
         }
         if (!liveTeam.isEmpty()) {
             cachedTeamViews = new ArrayList<>(liveTeam);
-            cachedPlayersAtMs = System.currentTimeMillis();
+            cachedPlayersAtMs = now;
+        }
+        if (shouldRecomputeLive) {
+            lastHudLiveRecomputeAtMs = now;
         }
 
         boolean useCachedPlayers = (liveEnemies.isEmpty() && liveTeam.isEmpty()) && cacheFresh(cachedPlayersAtMs);
@@ -376,11 +411,13 @@ public final class BedWarsOverlay {
         boolean danger = priorityTarget != null
             && (priorityTarget.distM() < DANGER_M || priorityTarget.aiming() || priorityTarget.etaSec() <= 2.5);
 
-        List<TeamStat> liveTeamStats = buildTeamStats(mc, self, enemies, teammates, myTeam);
+        List<TeamStat> liveTeamStats = shouldRecomputeLive
+            ? buildTeamStats(mc, self, enemies, teammates, myTeam)
+            : cachedTeamStats;
         // Cache only meaningful table snapshots (2+ teams), otherwise keep previous full snapshot.
         if (liveTeamStats.size() >= 2) {
             cachedTeamStats = new ArrayList<>(liveTeamStats);
-            cachedTeamStatsAtMs = System.currentTimeMillis();
+            cachedTeamStatsAtMs = now;
         }
         boolean useCachedTeamStats = liveTeamStats.size() < 2 && cacheFresh(cachedTeamStatsAtMs);
         List<TeamStat> teamStats = useCachedTeamStats ? cachedTeamStats : liveTeamStats;
@@ -542,7 +579,7 @@ public final class BedWarsOverlay {
             double etaRaw = etaToContact(self, p, dist);
             double eta   = smoothEta(p.getUUID(), etaRaw, now);
             String dyStr = dy > 2.5 ? "+" + (int) dy : dy < -2.5 ? "" + (int) dy : "";
-            String etaTxt = (eta > 0 && eta < 20.0) ? " " + String.format(Locale.ROOT, "%.1fs", eta) : "";
+            String etaTxt = (eta > 0 && eta < 20.0) ? " " + formatEta(eta) : "";
             rows.add(new PlayerView(
                 cap(p.getName().getString(), 6),
                 nameColor(mc, p),
@@ -568,10 +605,27 @@ public final class BedWarsOverlay {
             return etaRaw;
         }
         Double prev = etaSmoothedByPlayer.get(playerId);
-        double smoothed = (prev == null) ? etaRaw : (prev + (etaRaw - prev) * ETA_SMOOTH_ALPHA);
+        double smoothed;
+        if (prev == null) {
+            smoothed = etaRaw;
+        } else {
+            double delta = etaRaw - prev;
+            // Anti-jitter: clamp abrupt per-tick jump.
+            if (delta > ETA_MAX_STEP_PER_TICK) delta = ETA_MAX_STEP_PER_TICK;
+            if (delta < -ETA_MAX_STEP_PER_TICK) delta = -ETA_MAX_STEP_PER_TICK;
+            // Slightly faster adaptation when target is consistently closing in.
+            double alpha = delta < 0 ? Math.min(0.24, ETA_SMOOTH_ALPHA * 1.7) : ETA_SMOOTH_ALPHA;
+            smoothed = prev + delta * alpha;
+        }
         etaSmoothedByPlayer.put(playerId, smoothed);
         etaSeenAtMs.put(playerId, nowMs);
         return smoothed;
+    }
+
+    private static String formatEta(double etaSec) {
+        // Quantize to 0.2s to eliminate fast micro-flicker in text.
+        double q = Math.round(etaSec * 5.0) / 5.0;
+        return String.format(Locale.ROOT, "%.1fs", q);
     }
 
     private static void purgeOldEta(long nowMs) {
@@ -677,64 +731,86 @@ public final class BedWarsOverlay {
 
     private static int drawRadarConstructions(GuiGraphics g, Minecraft mc, LocalPlayer self, int cx, int cy, int radius) {
         if (mc.level == null) return 0;
+        ensureRadarConstructionsCache(mc, self);
         int marks = 0;
+        for (RadarConstructionSample sample : cachedRadarConstructions) {
+                int[] radar = toRadarCoords(self, sample.dx(), sample.dz(), radius);
+                int rx = radar[0];
+                int ry = radar[1];
+                g.fill(cx + rx, cy + ry, cx + rx + 1, cy + ry + 1, sample.color());
+                marks++;
+        }
+        return marks;
+    }
+
+    private static void ensureRadarConstructionsCache(Minecraft mc, LocalPlayer self) {
+        long now = System.currentTimeMillis();
+        BlockPos center = self.blockPosition();
+        boolean rangeChanged = radarCacheRangeBlocks != radarRangeBlocks;
+        boolean moved =
+            Math.abs(center.getX() - radarCacheCenterX) >= RADAR_CACHE_MOVE_THRESHOLD
+                || Math.abs(center.getZ() - radarCacheCenterZ) >= RADAR_CACHE_MOVE_THRESHOLD
+                || Math.abs(center.getY() - radarCacheCenterY) >= 2;
+        boolean stale = now - cachedRadarConstructionsAtMs >= RADAR_CONSTRUCTIONS_CACHE_MS;
+        if (!rangeChanged && !moved && !stale && !cachedRadarConstructions.isEmpty()) {
+            return;
+        }
+        rebuildRadarConstructionsCache(mc, center);
+        cachedRadarConstructionsAtMs = now;
+        radarCacheCenterX = center.getX();
+        radarCacheCenterY = center.getY();
+        radarCacheCenterZ = center.getZ();
+        radarCacheRangeBlocks = radarRangeBlocks;
+    }
+
+    private static void rebuildRadarConstructionsCache(Minecraft mc, BlockPos center) {
+        List<RadarConstructionSample> next = new ArrayList<>(RADAR_MAX_CONSTRUCTION_MARKS);
         BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
-        int step = 3;
-        int y0 = self.blockPosition().getY();
+        BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
+        int y0 = center.getY();
+        int step = Math.max(3, radarRangeBlocks / 16);
 
         for (int dx = -radarRangeBlocks; dx <= radarRangeBlocks; dx += step) {
             for (int dz = -radarRangeBlocks; dz <= radarRangeBlocks; dz += step) {
                 double distSq = dx * dx + dz * dz;
                 if (distSq > radarRangeBlocks * radarRangeBlocks) continue;
-
-                int px = self.blockPosition().getX() + dx;
-                int pz = self.blockPosition().getZ() + dz;
-                BlockPos bestPos = null;
-                BlockState bestState = null;
+                int x = center.getX() + dx;
+                int z = center.getZ() + dz;
+                int bestY = Integer.MIN_VALUE;
                 int bestDy = Integer.MAX_VALUE;
                 for (int dy = -RADAR_Y_RANGE; dy <= RADAR_Y_RANGE; dy++) {
-                    p.set(px, y0 + dy, pz);
+                    p.set(x, y0 + dy, z);
                     if (!mc.level.isLoaded(p)) continue;
                     BlockState bs = mc.level.getBlockState(p);
-                    if (bs.isAir()) continue;
-                    if (bs.getBlock() instanceof BedBlock) continue;
+                    if (bs.isAir() || bs.getBlock() instanceof BedBlock) continue;
                     int absDy = Math.abs(dy);
                     if (absDy < bestDy) {
                         bestDy = absDy;
-                        bestPos = p.immutable();
-                        bestState = bs;
+                        bestY = y0 + dy;
                     }
                 }
-                if (bestPos == null || bestState == null) continue;
-
-                int[] radar = toRadarCoords(self, dx, dz, radius);
-                int rx = radar[0];
-                int ry = radar[1];
-                int col = radarConstructionColor(mc, bestPos);
-                g.fill(cx + rx, cy + ry, cx + rx + 1, cy + ry + 1, col);
-                marks++;
+                if (bestY == Integer.MIN_VALUE) continue;
+                int color = radarConstructionColor(mc, x, bestY, z, probe);
+                next.add(new RadarConstructionSample(dx, dz, color));
+                if (next.size() >= RADAR_MAX_CONSTRUCTION_MARKS) {
+                    cachedRadarConstructions = next;
+                    return;
+                }
             }
         }
-        return marks;
+        cachedRadarConstructions = next;
     }
 
-    private static int radarConstructionColor(Minecraft mc, BlockPos pos) {
-        int x = pos.getX();
-        int y = pos.getY();
-        int z = pos.getZ();
-        BlockPos above = new BlockPos(x, y + 1, z);
-        BlockPos above2 = new BlockPos(x, y + 2, z);
-        BlockPos below = new BlockPos(x, y - 1, z);
-
-        boolean hasAbove = !mc.level.getBlockState(above).isAir();
-        boolean hasAbove2 = !mc.level.getBlockState(above2).isAir();
-        boolean airBelow = mc.level.getBlockState(below).isAir();
+    private static int radarConstructionColor(Minecraft mc, int x, int y, int z, BlockPos.MutableBlockPos probe) {
+        boolean hasAbove = isSolidAt(mc, x, y + 1, z, probe);
+        boolean hasAbove2 = isSolidAt(mc, x, y + 2, z, probe);
+        boolean airBelow = !isSolidAt(mc, x, y - 1, z, probe);
 
         int sideSolid = 0;
-        if (!mc.level.getBlockState(new BlockPos(x + 1, y, z)).isAir()) sideSolid++;
-        if (!mc.level.getBlockState(new BlockPos(x - 1, y, z)).isAir()) sideSolid++;
-        if (!mc.level.getBlockState(new BlockPos(x, y, z + 1)).isAir()) sideSolid++;
-        if (!mc.level.getBlockState(new BlockPos(x, y, z - 1)).isAir()) sideSolid++;
+        if (isSolidAt(mc, x + 1, y, z, probe)) sideSolid++;
+        if (isSolidAt(mc, x - 1, y, z, probe)) sideSolid++;
+        if (isSolidAt(mc, x, y, z + 1, probe)) sideSolid++;
+        if (isSolidAt(mc, x, y, z - 1, probe)) sideSolid++;
 
         // High constructions (towers/stacks): 3+ vertical blocks.
         if (hasAbove && hasAbove2) return 0xCC66E6FF;
@@ -743,6 +819,12 @@ public final class BedWarsOverlay {
         // Bridges / thin paths: exposed bottom or sparse neighbors.
         if (airBelow || sideSolid <= 1) return 0xCCCECECE;
         return 0xCC97D897;
+    }
+
+    private static boolean isSolidAt(Minecraft mc, int x, int y, int z, BlockPos.MutableBlockPos probe) {
+        probe.set(x, y, z);
+        if (!mc.level.isLoaded(probe)) return false;
+        return !mc.level.getBlockState(probe).isAir();
     }
 
     private static int drawRadarEnemies(GuiGraphics g, LocalPlayer self, List<AbstractClientPlayer> enemies, int cx, int cy, int radius) {

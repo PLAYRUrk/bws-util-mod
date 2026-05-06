@@ -41,12 +41,18 @@ public final class AutoclickerBridgeClient {
     private static volatile Boolean sentActive;
     private static volatile Boolean sentLmbEnabled;
     private static volatile Boolean sentRmbEnabled;
+    private static volatile Boolean pendingLmbCommand;
+    private static volatile Boolean pendingRmbCommand;
+    private static volatile long pendingLmbAtMs;
+    private static volatile long pendingRmbAtMs;
 
     private static volatile boolean suppressLmbByMod;
     private static volatile boolean suppressRmbByMod;
     private static volatile Boolean lmbBeforeSuppression;
     private static volatile Boolean rmbBeforeSuppression;
     private static volatile long lastSuppressionPulseAtMs;
+    private static volatile long lastUnsuppressedReconcileAtMs;
+    private static final long STATUS_STALE_GUARD_MS = 900L;
 
     private AutoclickerBridgeClient() {}
 
@@ -107,7 +113,11 @@ public final class AutoclickerBridgeClient {
     }
 
     public static void tickSuppressionPulse() {
-        if (!RUNNING.get() || (!suppressLmbByMod && !suppressRmbByMod)) {
+        if (!RUNNING.get()) {
+            return;
+        }
+        if (!suppressLmbByMod && !suppressRmbByMod) {
+            tickUnsuppressedReconcile();
             return;
         }
         long now = System.currentTimeMillis();
@@ -120,6 +130,20 @@ public final class AutoclickerBridgeClient {
         }
         if (suppressRmbByMod) {
             forceRmbDisabled();
+        }
+    }
+
+    private static void tickUnsuppressedReconcile() {
+        long now = System.currentTimeMillis();
+        if (now - lastUnsuppressedReconcileAtMs < 250L) {
+            return;
+        }
+        lastUnsuppressedReconcileAtMs = now;
+        synchronized (STATE_LOCK) {
+            if (suppressLmbByMod || suppressRmbByMod) {
+                return;
+            }
+            reconcileChannelsToDesired();
         }
     }
 
@@ -214,18 +238,32 @@ public final class AutoclickerBridgeClient {
         Matcher lmbMatcher = LMB_FIELD.matcher(line);
         if (lmbMatcher.find()) {
             boolean lmb = Boolean.parseBoolean(lmbMatcher.group(1));
+            if (isConflictingPendingLmb(lmb)) {
+                // Ignore stale status that races with our latest control command.
+            } else {
             lastKnownLmbEnabled = lmb;
             // While suppressed we intentionally force false; do not treat it as user's desired state.
             if (!suppressLmbByMod || lmb) {
                 desiredLmbEnabled = lmb;
             }
+                if (pendingLmbCommand != null && pendingLmbCommand == lmb) {
+                    pendingLmbCommand = null;
+                }
+            }
         }
         Matcher rmbMatcher = RMB_FIELD.matcher(line);
         if (rmbMatcher.find()) {
             boolean rmb = Boolean.parseBoolean(rmbMatcher.group(1));
+            if (isConflictingPendingRmb(rmb)) {
+                // Ignore stale status that races with our latest control command.
+            } else {
             lastKnownRmbEnabled = rmb;
             if (!suppressRmbByMod || rmb) {
                 desiredRmbEnabled = rmb;
+            }
+                if (pendingRmbCommand != null && pendingRmbCommand == rmb) {
+                    pendingRmbCommand = null;
+                }
             }
         }
     }
@@ -269,6 +307,8 @@ public final class AutoclickerBridgeClient {
         String payload = "{\"type\":\"ac_control\",\"lmb_enabled\":" + enabled + "}";
         sendRaw(payload);
         lastKnownLmbEnabled = enabled;
+        pendingLmbCommand = enabled;
+        pendingLmbAtMs = System.currentTimeMillis();
     }
 
     private static void sendRmbControl(boolean enabled) {
@@ -278,6 +318,8 @@ public final class AutoclickerBridgeClient {
         String payload = "{\"type\":\"ac_control\",\"rmb_enabled\":" + enabled + "}";
         sendRaw(payload);
         lastKnownRmbEnabled = enabled;
+        pendingRmbCommand = enabled;
+        pendingRmbAtMs = System.currentTimeMillis();
     }
 
     private static void forceLmbDisabled() {
@@ -306,6 +348,26 @@ public final class AutoclickerBridgeClient {
 
     private static Boolean getDesiredRmbEnabled() {
         return desiredRmbEnabled != null ? desiredRmbEnabled : getEffectiveRmbEnabled();
+    }
+
+    private static boolean isConflictingPendingLmb(boolean incoming) {
+        if (pendingLmbCommand == null) return false;
+        long age = System.currentTimeMillis() - pendingLmbAtMs;
+        if (age > STATUS_STALE_GUARD_MS) {
+            pendingLmbCommand = null;
+            return false;
+        }
+        return pendingLmbCommand != incoming;
+    }
+
+    private static boolean isConflictingPendingRmb(boolean incoming) {
+        if (pendingRmbCommand == null) return false;
+        long age = System.currentTimeMillis() - pendingRmbAtMs;
+        if (age > STATUS_STALE_GUARD_MS) {
+            pendingRmbCommand = null;
+            return false;
+        }
+        return pendingRmbCommand != incoming;
     }
 
     private static void reconcileChannelsToDesired() {
