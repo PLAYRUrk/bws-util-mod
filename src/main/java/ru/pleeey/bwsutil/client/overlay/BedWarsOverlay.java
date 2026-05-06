@@ -10,7 +10,9 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Style;
 import net.minecraft.network.chat.TextColor;
 import net.minecraft.resources.Identifier;
+import net.minecraft.sounds.SoundEvents;
 import net.minecraft.util.Mth;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BowItem;
@@ -19,8 +21,10 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BedPart;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.scores.PlayerTeam;
+import ru.pleeey.bwsutil.config.ScopeConfig;
 
 import java.util.*;
 
@@ -60,6 +64,8 @@ public final class BedWarsOverlay {
     private static final long RADAR_CONSTRUCTIONS_CACHE_MS = 420L;
     private static final int RADAR_CACHE_MOVE_THRESHOLD = 4;
     private static final int RADAR_MAX_CONSTRUCTION_MARKS = 180;
+    private static final long FIREBALL_SOUND_COOLDOWN_MS = 900L;
+    private static final long VOID_SOUND_COOLDOWN_MS = 1_200L;
     private static int radarRangeBlocks = RADAR_RANGE_BLOCKS_DEFAULT;
 
     // ── Кровати: кеш результатов сканирования ───────────────────────────────
@@ -131,6 +137,15 @@ public final class BedWarsOverlay {
     private static int radarCacheCenterY;
     private static int radarCacheCenterZ;
     private static int radarCacheRangeBlocks = RADAR_RANGE_BLOCKS_DEFAULT;
+    private static String fireballAlertText = "";
+    private static int fireballAlertColor = 0xFFFF5555;
+    private static boolean fireballAlertDanger;
+    private static String bridgeAlertText = "";
+    private static int bridgeAlertColor = 0xFF55FF55;
+    private static boolean bridgeAlertDanger;
+    private static long lastFireballWarnAtMs;
+    private static long lastVoidWarnAtMs;
+    private static String cachedFreshnessLabel = "LIVE";
 
     private static void resetCache() {
         cachedEnemyViews = new ArrayList<>();
@@ -151,6 +166,13 @@ public final class BedWarsOverlay {
         etaSeenAtMs.clear();
         cachedRadarConstructions = new ArrayList<>();
         cachedRadarConstructionsAtMs = 0L;
+        fireballAlertText = "";
+        bridgeAlertText = "";
+        fireballAlertDanger = false;
+        bridgeAlertDanger = false;
+        lastFireballWarnAtMs = 0L;
+        lastVoidWarnAtMs = 0L;
+        cachedFreshnessLabel = "LIVE";
     }
 
     public static void increaseRadarScale() {
@@ -386,42 +408,38 @@ public final class BedWarsOverlay {
         long now = System.currentTimeMillis();
         boolean shouldRecomputeLive =
             (now - lastHudLiveRecomputeAtMs) >= HUD_LIVE_RECOMPUTE_INTERVAL_MS
-                || cachedEnemyViews.isEmpty()
-                || cachedTeamViews.isEmpty();
+                || lastHudLiveRecomputeAtMs == 0L;
 
-        List<PlayerView> liveEnemies = shouldRecomputeLive ? buildPlayerViews(mc, self, enemies) : cachedEnemyViews;
-        List<PlayerView> liveTeam    = shouldRecomputeLive ? buildPlayerViews(mc, self, teammates) : cachedTeamViews;
-        if (!liveEnemies.isEmpty()) {
-            cachedEnemyViews = new ArrayList<>(liveEnemies);
-            cachedPlayersAtMs = now;
-        }
-        if (!liveTeam.isEmpty()) {
-            cachedTeamViews = new ArrayList<>(liveTeam);
+        if (shouldRecomputeLive) {
+            cachedEnemyViews = new ArrayList<>(buildPlayerViews(mc, self, enemies));
+            cachedTeamViews = new ArrayList<>(buildPlayerViews(mc, self, teammates));
             cachedPlayersAtMs = now;
         }
         if (shouldRecomputeLive) {
             lastHudLiveRecomputeAtMs = now;
+            refreshContextHelpers(mc, self, now);
         }
 
-        boolean useCachedPlayers = (liveEnemies.isEmpty() && liveTeam.isEmpty()) && cacheFresh(cachedPlayersAtMs);
-        List<PlayerView> enemyViews = useCachedPlayers ? cachedEnemyViews : liveEnemies;
-        List<PlayerView> teamViews  = useCachedPlayers ? cachedTeamViews : liveTeam;
+        boolean useCachedPlayers = !shouldRecomputeLive && cacheFresh(cachedPlayersAtMs);
+        List<PlayerView> enemyViews = cachedEnemyViews;
+        List<PlayerView> teamViews  = cachedTeamViews;
 
         PlayerView priorityTarget = pickPriorityTarget(enemyViews);
         boolean danger = priorityTarget != null
             && (priorityTarget.distM() < DANGER_M || priorityTarget.aiming() || priorityTarget.etaSec() <= 2.5);
 
-        List<TeamStat> liveTeamStats = shouldRecomputeLive
-            ? buildTeamStats(mc, self, enemies, teammates, myTeam)
-            : cachedTeamStats;
-        // Cache only meaningful table snapshots (2+ teams), otherwise keep previous full snapshot.
-        if (liveTeamStats.size() >= 2) {
-            cachedTeamStats = new ArrayList<>(liveTeamStats);
+        if (shouldRecomputeLive) {
+            cachedTeamStats = new ArrayList<>(buildTeamStats(mc, self, enemies, teammates, myTeam));
             cachedTeamStatsAtMs = now;
         }
-        boolean useCachedTeamStats = liveTeamStats.size() < 2 && cacheFresh(cachedTeamStatsAtMs);
-        List<TeamStat> teamStats = useCachedTeamStats ? cachedTeamStats : liveTeamStats;
+        boolean useCachedTeamStats = !shouldRecomputeLive && cacheFresh(cachedTeamStatsAtMs);
+        List<TeamStat> teamStats = cachedTeamStats;
         boolean showTable = teamStats.size() >= 2;
+
+        if (shouldRecomputeLive) {
+            boolean useCacheAnySnapshot = useCachedPlayers || useCachedTeamStats;
+            cachedFreshnessLabel = computeFreshnessLabel(useCacheAnySnapshot);
+        }
 
         int rows = 1   // заголовок
             + (enemyViews.isEmpty() ? 0 : 1 + Math.min(enemyViews.size(), MAX_ENEMIES))
@@ -443,7 +461,7 @@ public final class BedWarsOverlay {
         int titleX = panelX + PAD;
         txt(g, mc, title, titleX, y, 0xFFFFFFFF);
         boolean useCacheAny = useCachedPlayers || useCachedTeamStats;
-        String freshness = freshnessLabel(useCacheAny);
+        String freshness = freshnessLabel();
         int rightEdgeX = panelX + PANEL_W - PAD;
 
         int freshnessX = titleX + mc.font.width(title) + 8;
@@ -453,7 +471,7 @@ public final class BedWarsOverlay {
         // Hint on the right may collide with freshness; shorten one of them to keep a clean header line.
         String hint = "";
         if (!enemyViews.isEmpty()) {
-            hint = enemyViews.size() + " hostile" + (useCachedPlayers ? " [cache]" : "");
+            hint = enemyViews.size() + " hostile";
         }
 
         int freshnessMinX = titleX + mc.font.width(title) + 2;
@@ -525,6 +543,7 @@ public final class BedWarsOverlay {
         }
 
         drawTacticalRadar(g, mc, self, enemies);
+        drawContextHelpers(g, mc);
     }
 
     // ── Строка игрока ────────────────────────────────────────────────────────
@@ -903,6 +922,181 @@ public final class BedWarsOverlay {
         g.fill(left + 1, top + 1, right, bottom - 1, 0x33220000);
     }
 
+    private static void refreshContextHelpers(Minecraft mc, LocalPlayer self, long nowMs) {
+        if (ScopeConfig.FIREBALL_THREAT_ENABLED.get()) {
+            evaluateFireballThreat(mc, self);
+            if (fireballAlertDanger) {
+                playWarningSound(mc, true, nowMs);
+            }
+        } else {
+            fireballAlertText = "";
+            fireballAlertDanger = false;
+        }
+        if (ScopeConfig.BRIDGE_HELPER_ENABLED.get()) {
+            evaluateBridgeHelper(mc, self);
+            if (bridgeAlertDanger) {
+                playWarningSound(mc, false, nowMs);
+            }
+        } else {
+            bridgeAlertText = "";
+            bridgeAlertDanger = false;
+        }
+    }
+
+    private static void evaluateFireballThreat(Minecraft mc, LocalPlayer self) {
+        fireballAlertDanger = false;
+        fireballAlertText = "FIREBALL: clear";
+        fireballAlertColor = 0xFF66CC66;
+        AABB box = self.getBoundingBox().inflate(36.0, 18.0, 36.0);
+        Entity best = null;
+        double bestEta = Double.POSITIVE_INFINITY;
+        double bestDist = Double.POSITIVE_INFINITY;
+        for (Entity e : mc.level.getEntities(self, box)) {
+            Identifier entityId = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType());
+            String path = entityId == null ? "" : entityId.getPath();
+            if (!path.contains("fireball")) continue;
+            Vec3 toPlayer = self.position().subtract(e.position());
+            double dist = toPlayer.length();
+            if (dist < 0.001) continue;
+            Vec3 vel = e.getDeltaMovement();
+            double closingPerTick = toPlayer.normalize().dot(vel);
+            if (closingPerTick <= 0.015) continue;
+            double etaSec = (dist / closingPerTick) / 20.0;
+            if (etaSec < bestEta) {
+                bestEta = etaSec;
+                bestDist = dist;
+                best = e;
+            }
+        }
+        if (best != null) {
+            fireballAlertDanger = bestEta <= 2.4 || bestDist <= 18.0;
+            String dir = directionArrowFromVector(self, best.position().subtract(self.position()));
+            fireballAlertText = String.format(Locale.ROOT, "FIREBALL %s %.0fm %.1fs", dir, bestDist, bestEta);
+            fireballAlertColor = fireballAlertDanger ? 0xFFFF5555 : 0xFFFFAA55;
+        }
+    }
+
+    private static void evaluateBridgeHelper(Minecraft mc, LocalPlayer self) {
+        BlockPos base = self.blockPosition();
+        boolean overVoid = isVoidColumn(mc, base, 14);
+        int sideAir = 0;
+        if (isAirAt(mc, base.getX() + 1, base.getY() - 1, base.getZ())) sideAir++;
+        if (isAirAt(mc, base.getX() - 1, base.getY() - 1, base.getZ())) sideAir++;
+        if (isAirAt(mc, base.getX(), base.getY() - 1, base.getZ() + 1)) sideAir++;
+        if (isAirAt(mc, base.getX(), base.getY() - 1, base.getZ() - 1)) sideAir++;
+        boolean edgeRisk = sideAir >= 2;
+        double speed = self.getDeltaMovement().horizontalDistance();
+        int predictSteps = speed > 0.11 ? 6 : speed > 0.06 ? 4 : 3;
+        boolean predictedVoidDanger = false;
+        Vec3 move = self.getDeltaMovement();
+        Vec3 look = self.getLookAngle();
+        double dirX = Math.abs(move.x) + Math.abs(move.z) > 0.001 ? move.x : look.x * 0.12;
+        double dirZ = Math.abs(move.x) + Math.abs(move.z) > 0.001 ? move.z : look.z * 0.12;
+        for (int i = 1; i <= predictSteps; i++) {
+            int px = Mth.floor(self.getX() + dirX * i * 2.3);
+            int pz = Mth.floor(self.getZ() + dirZ * i * 2.3);
+            BlockPos probe = new BlockPos(px, base.getY(), pz);
+            if (isVoidColumn(mc, probe, 12)) {
+                predictedVoidDanger = true;
+                break;
+            }
+        }
+
+        bridgeAlertDanger = (overVoid || predictedVoidDanger) && (speed > 0.030 || self.fallDistance > 0.8f || edgeRisk || predictedVoidDanger);
+        if (bridgeAlertDanger) {
+            bridgeAlertText = predictedVoidDanger
+                ? String.format(Locale.ROOT, "BRIDGE RISK AHEAD %.0fm", Math.max(2.0, speed * 38.0))
+                : String.format(Locale.ROOT, "BRIDGE RISK speed %.2f", speed);
+            bridgeAlertColor = predictedVoidDanger ? 0xFFFF7744 : 0xFFFFAA33;
+        } else if (overVoid) {
+            bridgeAlertText = "BRIDGE: over void";
+            bridgeAlertColor = 0xFFFFFF55;
+        } else {
+            bridgeAlertText = "BRIDGE: stable";
+            bridgeAlertColor = 0xFF66CC66;
+        }
+    }
+
+    private static boolean isVoidColumn(Minecraft mc, BlockPos base, int depth) {
+        for (int i = 1; i <= depth; i++) {
+            BlockPos p = base.below(i);
+            if (mc.level.isLoaded(p) && !mc.level.getBlockState(p).isAir()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static void drawContextHelpers(GuiGraphics g, Minecraft mc) {
+        List<String> lines = new ArrayList<>(2);
+        List<Integer> colors = new ArrayList<>(2);
+        if (ScopeConfig.FIREBALL_THREAT_ENABLED.get() && !fireballAlertText.isEmpty()) {
+            lines.add(fireballAlertText);
+            colors.add(fireballAlertColor);
+        }
+        if (ScopeConfig.BRIDGE_HELPER_ENABLED.get() && !bridgeAlertText.isEmpty()) {
+            lines.add(bridgeAlertText);
+            colors.add(bridgeAlertColor);
+        }
+        if (lines.isEmpty()) return;
+
+        int maxW = 0;
+        for (String line : lines) maxW = Math.max(maxW, mc.font.width(line));
+        int x = mc.getWindow().getGuiScaledWidth() - maxW - 16;
+        int y = 8 + RADAR_SIZE + 6;
+        int h = lines.size() * 12 + 6;
+        g.fill(x - 4, y - 2, x + maxW + 6, y + h, 0x44000000);
+        for (int i = 0; i < lines.size(); i++) {
+            txt(g, mc, lines.get(i), x, y + i * 12, colors.get(i));
+        }
+    }
+
+    private static void playWarningSound(Minecraft mc, boolean fireball, long nowMs) {
+        if (mc.player == null) return;
+        if (!ScopeConfig.WARNING_SOUND_ENABLED.get()) return;
+        if (fireball) {
+            if (!ScopeConfig.FIREBALL_WARNING_SOUND.get()) return;
+            if (nowMs - lastFireballWarnAtMs < FIREBALL_SOUND_COOLDOWN_MS) return;
+            lastFireballWarnAtMs = nowMs;
+            float vol = ScopeConfig.FIREBALL_WARNING_VOLUME.get() / 100.0f;
+            if (vol > 0f) {
+                mc.player.playSound(SoundEvents.NOTE_BLOCK_BELL.value(), vol, 1.35f);
+            }
+        } else {
+            if (!ScopeConfig.VOID_WARNING_SOUND.get()) return;
+            if (nowMs - lastVoidWarnAtMs < VOID_SOUND_COOLDOWN_MS) return;
+            lastVoidWarnAtMs = nowMs;
+            float vol = ScopeConfig.VOID_WARNING_VOLUME.get() / 100.0f;
+            if (vol > 0f) {
+                mc.player.playSound(SoundEvents.NOTE_BLOCK_BASEDRUM.value(), vol, 1.0f);
+            }
+        }
+    }
+
+    private static boolean isAirAt(Minecraft mc, int x, int y, int z) {
+        BlockPos pos = new BlockPos(x, y, z);
+        if (!mc.level.isLoaded(pos)) return true;
+        return mc.level.getBlockState(pos).isAir();
+    }
+
+    private static String directionArrowFromVector(LocalPlayer self, Vec3 toTarget) {
+        Vec3 forward = self.getLookAngle();
+        forward = new Vec3(forward.x, 0.0, forward.z);
+        if (forward.lengthSqr() < 1.0e-6) return "↑";
+        forward = forward.normalize();
+        Vec3 to = new Vec3(toTarget.x, 0.0, toTarget.z);
+        if (to.lengthSqr() < 1.0e-6) return "↑";
+        to = to.normalize();
+        Vec3 right = new Vec3(-forward.z, 0.0, forward.x);
+        double front = forward.dot(to);
+        double side = right.dot(to);
+        if (front >= 0.9239) return "↑";
+        if (front <= -0.9239) return "↓";
+        if (Math.abs(side) >= 0.9239) return side > 0 ? "→" : "←";
+        if (front > 0) return side > 0 ? "↗" : "↖";
+        return side > 0 ? "↘" : "↙";
+    }
+
     private static double threatScore(LocalPlayer self, AbstractClientPlayer p, double dist, float hpPct) {
         double score = 0.0;
         score += Math.max(0.0, 35.0 - dist) * 2.2;
@@ -942,10 +1136,13 @@ public final class BedWarsOverlay {
             : (abs <= 67.5 ? "↖" : abs <= 112.5 ? "←" : "↙");
     }
 
-    private static String freshnessLabel(boolean usedCache) {
-        long ageMs = lastBedScanCompletedAtMs <= 0L ? -1L : (System.currentTimeMillis() - lastBedScanCompletedAtMs);
-        String scan = scanState.active ? "SCAN…" : (ageMs < 0 ? "NOSCAN" : ("S" + (ageMs / 1000) + "s"));
-        return usedCache ? ("CACHE " + scan) : ("LIVE " + scan);
+    private static String computeFreshnessLabel(boolean usedCache) {
+        if (scanState.active) return "SCAN";
+        return usedCache ? "CACHE" : "LIVE";
+    }
+
+    private static String freshnessLabel() {
+        return cachedFreshnessLabel;
     }
 
     private static int freshnessColor(boolean usedCache) {
