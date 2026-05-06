@@ -97,6 +97,12 @@ public final class AutoclickerBridgeClient {
                     sendRmbControl(shouldRestoreRmb);
                 }
             }
+
+            // Anti-stuck guard: once suppression is fully released, force channels
+            // back to desired state even if an earlier transition was missed.
+            if (!suppressLmbByMod && !suppressRmbByMod) {
+                reconcileChannelsToDesired();
+            }
         }
     }
 
@@ -300,6 +306,17 @@ public final class AutoclickerBridgeClient {
 
     private static Boolean getDesiredRmbEnabled() {
         return desiredRmbEnabled != null ? desiredRmbEnabled : getEffectiveRmbEnabled();
+    }
+
+    private static void reconcileChannelsToDesired() {
+        Boolean desiredLmb = getDesiredLmbEnabled();
+        Boolean desiredRmb = getDesiredRmbEnabled();
+        if (desiredLmb != null) {
+            sendLmbControl(desiredLmb);
+        }
+        if (desiredRmb != null) {
+            sendRmbControl(desiredRmb);
+        }
     }
 
     private static void sendRaw(String line) {

@@ -44,7 +44,10 @@ public final class BedWarsOverlay {
     private static final int MAX_ENEMIES = 6;
     private static final int MAX_TEAM    = 4;
     private static final int DANGER_M    = 15;
+    private static final int THREAT_ROW_SHIFT_X = 14;
+    private static final int THREAT_ROW_EXTRA_BG = 26;
     private static final long HUD_CACHE_TTL_MS = 30_000L;
+    private static final double ETA_SMOOTH_ALPHA = 0.20;
     private static final int RADAR_SIZE = 92;
     private static final int RADAR_RANGE_BLOCKS_DEFAULT = 48;
     private static final int RADAR_RANGE_BLOCKS_MIN = 24;
@@ -110,6 +113,8 @@ public final class BedWarsOverlay {
     private static List<PlayerView> cachedTeamViews  = new ArrayList<>();
     private static long cachedPlayersAtMs = 0L;
     private static long lastBedScanCompletedAtMs = 0L;
+    private static final Map<UUID, Double> etaSmoothedByPlayer = new HashMap<>();
+    private static final Map<UUID, Long> etaSeenAtMs = new HashMap<>();
 
     private static List<TeamStat> cachedTeamStats = new ArrayList<>();
     private static long cachedTeamStatsAtMs = 0L;
@@ -128,6 +133,8 @@ public final class BedWarsOverlay {
         scanState.center = BlockPos.ZERO;
         lastBedScanCompletedAtMs = 0L;
         radarRangeBlocks = RADAR_RANGE_BLOCKS_DEFAULT;
+        etaSmoothedByPlayer.clear();
+        etaSeenAtMs.clear();
     }
 
     public static void increaseRadarScale() {
@@ -230,19 +237,13 @@ public final class BedWarsOverlay {
     }
 
     /**
-     * Оценивает защиту в ближайшей оболочке вокруг кровати.
-     * Берём только локальные блоки (3×3×3), чтобы не считать дальние конструкции.
-     * Blast resistance → очки: воздух=0, вул=1, камень/терракота=2, endstone=3, обсидиан=8.
+     * Оценивает тип защиты только по полной оболочке вокруг кровати:
+     * все стороны (кроме нижней) должны быть закрыты одним типом материала.
+     * Если оболочка неполная или смешанная, complete=false (предыдущее стабильное значение сохраняется).
      */
     private static DefenseSample calcDefense(Minecraft mc, BlockPos bedHead) {
-        int weakCount = 0;   // wool / weak shell
-        int midCount = 0;    // terracotta / stone-like
-        int strongCount = 0; // endstone / strong blocks
-        int obsCount = 0;    // obsidian-like
-        int unknown = 0;
         BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
 
-        // Include both bed parts (head + nearby foot) to avoid misclassifying asymmetric defense.
         Set<BlockPos> bedParts = new LinkedHashSet<>();
         bedParts.add(bedHead.immutable());
         for (int ox = -1; ox <= 1; ox++) {
@@ -251,63 +252,63 @@ public final class BedWarsOverlay {
                     if (ox == 0 && oy == 0 && oz == 0) continue;
                     p.set(bedHead.getX() + ox, bedHead.getY() + oy, bedHead.getZ() + oz);
                     if (!mc.level.isLoaded(p)) continue;
-                    BlockState maybeBed = mc.level.getBlockState(p);
-                    if (maybeBed.getBlock() instanceof BedBlock) {
+                    if (mc.level.getBlockState(p).getBlock() instanceof BedBlock) {
                         bedParts.add(p.immutable());
                     }
                 }
             }
         }
 
-        Set<BlockPos> visited = new HashSet<>();
-        for (BlockPos base : bedParts) {
-            for (int dx = -1; dx <= 1; dx++) {
-                for (int dz = -1; dz <= 1; dz++) {
-                    for (int dy = -1; dy <= 1; dy++) {
-                        if (dx == 0 && dy == 0 && dz == 0) continue;
-                        if (dy < 0) continue; // ignore island material below bed level
-                        p.set(base.getX() + dx, base.getY() + dy, base.getZ() + dz);
-                        BlockPos current = p.immutable();
-                        if (!visited.add(current)) continue;
-
-                        if (!mc.level.isLoaded(current)) {
-                            unknown++;
-                            continue;
-                        }
-                        BlockState bs = mc.level.getBlockState(current);
-                        if (bs.isAir()) continue;
-                        if (bs.getBlock() instanceof BedBlock) continue;
-                        float blastRes = bs.getBlock().getExplosionResistance();
-                        if (blastRes < 1f) {
-                            weakCount++;
-                        } else if (blastRes < 10f) {
-                            midCount++;
-                        } else if (blastRes < 1200f) {
-                            strongCount++;
-                        } else {
-                            obsCount++;
-                        }
-                    }
+        // Required shell positions: 4 horizontal sides + top for each bed part (no bottom).
+        int[][] shellDirs = {
+            { 1, 0, 0}, {-1, 0, 0},
+            { 0, 0, 1}, { 0, 0,-1},
+            { 0, 1, 0}
+        };
+        Set<BlockPos> shell = new LinkedHashSet<>();
+        for (BlockPos part : bedParts) {
+            for (int[] d : shellDirs) {
+                BlockPos n = part.offset(d[0], d[1], d[2]);
+                if (!bedParts.contains(n)) {
+                    shell.add(n);
                 }
             }
         }
 
-        int score;
-        if (obsCount >= 1) {
-            score = 180 + obsCount * 8 + strongCount * 2;
-        } else if (strongCount >= 3) {
-            score = 110 + strongCount * 4 + midCount;
-        } else if (midCount >= 3) {
-            score = 55 + midCount * 3 + weakCount;
-        } else if (weakCount > 0) {
-            score = 18 + weakCount * 2;
-        } else {
-            score = 0;
+        Integer shellTier = null;
+        for (BlockPos pos : shell) {
+            if (!mc.level.isLoaded(pos)) {
+                return new DefenseSample(0, false);
+            }
+            BlockState bs = mc.level.getBlockState(pos);
+            if (bs.isAir() || bs.getBlock() instanceof BedBlock) {
+                return new DefenseSample(0, false);
+            }
+            int tier = defenseTierByResistance(bs.getBlock().getExplosionResistance());
+            if (shellTier == null) {
+                shellTier = tier;
+            } else if (shellTier != tier) {
+                return new DefenseSample(0, false);
+            }
         }
 
-        // 3x3x3 shell: 26 checks; tolerate small chunk-edge uncertainty.
-        boolean complete = unknown <= 8;
-        return new DefenseSample(score, complete);
+        if (shellTier == null) {
+            return new DefenseSample(0, false);
+        }
+        int score = switch (shellTier) {
+            case 4 -> 180; // OBS
+            case 3 -> 110; // END
+            case 2 -> 55;  // TER
+            default -> 18; // WOL
+        };
+        return new DefenseSample(score, true);
+    }
+
+    private static int defenseTierByResistance(float blastRes) {
+        if (blastRes < 1f) return 1;
+        if (blastRes < 10f) return 2;
+        if (blastRes < 1200f) return 3;
+        return 4;
     }
 
     private static int stabilizeDefense(int prev, int current) {
@@ -460,7 +461,13 @@ public final class BedWarsOverlay {
             txt(g, mc, "ENEMIES (" + enemyViews.size() + ")", panelX + PAD, y, 0xFFFF5555);
             y += ROW_H;
             for (int i = 0; i < Math.min(enemyViews.size(), MAX_ENEMIES); i++) {
-                playerRow(g, mc, enemyViews.get(i), panelX + PAD, y, panelX + PANEL_W - PAD);
+                PlayerView row = enemyViews.get(i);
+                boolean emphasize = isProjectedPriorityThreat(row, priorityTarget);
+                int rowShift = emphasize ? THREAT_ROW_SHIFT_X : 0;
+                if (emphasize) {
+                    drawThreatRowCard(g, panelX, y);
+                }
+                playerRow(g, mc, row, panelX + PAD + rowShift, y, panelX + PANEL_W - PAD + rowShift);
                 y += ROW_H;
             }
         }
@@ -525,13 +532,15 @@ public final class BedWarsOverlay {
 
     private static List<PlayerView> buildPlayerViews(Minecraft mc, LocalPlayer self, List<AbstractClientPlayer> players) {
         List<PlayerView> rows = new ArrayList<>(players.size());
+        long now = System.currentTimeMillis();
         for (AbstractClientPlayer p : players) {
             double dist  = self.distanceTo(p);
             float hp     = p.getHealth();
             float maxHp  = Math.max(1f, p.getMaxHealth());
             float hpPct  = hp / maxHp;
             double dy    = p.getY() - self.getY();
-            double eta   = etaToContact(self, p, dist);
+            double etaRaw = etaToContact(self, p, dist);
+            double eta   = smoothEta(p.getUUID(), etaRaw, now);
             String dyStr = dy > 2.5 ? "+" + (int) dy : dy < -2.5 ? "" + (int) dy : "";
             String etaTxt = (eta > 0 && eta < 20.0) ? " " + String.format(Locale.ROOT, "%.1fs", eta) : "";
             rows.add(new PlayerView(
@@ -549,7 +558,32 @@ public final class BedWarsOverlay {
                 threatScore(self, p, dist, hpPct)
             ));
         }
+        purgeOldEta(now);
         return rows;
+    }
+
+    private static double smoothEta(UUID playerId, double etaRaw, long nowMs) {
+        if (!Double.isFinite(etaRaw) || etaRaw <= 0.0) {
+            etaSeenAtMs.put(playerId, nowMs);
+            return etaRaw;
+        }
+        Double prev = etaSmoothedByPlayer.get(playerId);
+        double smoothed = (prev == null) ? etaRaw : (prev + (etaRaw - prev) * ETA_SMOOTH_ALPHA);
+        etaSmoothedByPlayer.put(playerId, smoothed);
+        etaSeenAtMs.put(playerId, nowMs);
+        return smoothed;
+    }
+
+    private static void purgeOldEta(long nowMs) {
+        long ttlMs = 10_000L;
+        Iterator<Map.Entry<UUID, Long>> it = etaSeenAtMs.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<UUID, Long> e = it.next();
+            if (nowMs - e.getValue() > ttlMs) {
+                etaSmoothedByPlayer.remove(e.getKey());
+                it.remove();
+            }
+        }
     }
 
     private static boolean cacheFresh(long ts) {
@@ -768,6 +802,23 @@ public final class BedWarsOverlay {
             if (best == null || pv.threatScore() > best.threatScore()) best = pv;
         }
         return best;
+    }
+
+    private static boolean isProjectedPriorityThreat(PlayerView row, PlayerView priorityTarget) {
+        if (priorityTarget == null) return false;
+        if (row == priorityTarget) return true;
+        // "Soon-priority" threat: close in score and already reasonably dangerous.
+        return row.threatScore() >= priorityTarget.threatScore() * 0.86
+            && (row.distM() <= 24 || row.aiming() || row.etaSec() <= 4.0);
+    }
+
+    private static void drawThreatRowCard(GuiGraphics g, int panelX, int y) {
+        int top = y - 1;
+        int bottom = y + ROW_H - 1;
+        int left = panelX + 2;
+        int right = panelX + PANEL_W + THREAT_ROW_EXTRA_BG;
+        g.fill(left, top, right, bottom, 0x55300000);
+        g.fill(left + 1, top + 1, right, bottom - 1, 0x33220000);
     }
 
     private static double threatScore(LocalPlayer self, AbstractClientPlayer p, double dist, float hpPct) {
