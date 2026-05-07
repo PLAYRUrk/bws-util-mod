@@ -52,8 +52,8 @@ public final class BedWarsOverlay {
     private static final int THREAT_ROW_EXTRA_BG = 26;
     private static final long HUD_CACHE_TTL_MS = 30_000L;
     private static final long HUD_LIVE_RECOMPUTE_INTERVAL_MS = 120L;
-    private static final double ETA_SMOOTH_ALPHA = 0.14;
-    private static final double ETA_MAX_STEP_PER_TICK = 0.10;
+    private static final double ETA_SMOOTH_ALPHA = 0.22;
+    private static final double ETA_MAX_STEP_PER_TICK = 0.45;
     private static final int RADAR_SIZE = 92;
     private static final int RADAR_RANGE_BLOCKS_DEFAULT = 48;
     private static final int RADAR_RANGE_BLOCKS_MIN = 24;
@@ -75,11 +75,13 @@ public final class BedWarsOverlay {
     // ── Кровати: кеш результатов сканирования ───────────────────────────────
 
     /** Информация о найденной кровати. */
-    private record BedInfo(BlockPos pos, boolean alive, int defScore) {}
+    private record BedInfo(BlockPos pos, DyeColor color, boolean alive, int defScore) {}
     private record DefenseSample(int score, boolean complete) {}
 
     /** DyeColor → информация о кровати (null = ни разу не видели в радиусе). */
     private static final Map<DyeColor, BedInfo> bedData = new LinkedHashMap<>();
+    /** Состояние кроватей по позиции (нужно, чтобы разные кровати не "слипались"). */
+    private static final Map<BlockPos, BedInfo> bedDataByPos = new LinkedHashMap<>();
 
     private static int bedScanTick = 0;
     private static final int SCAN_EVERY = 60;  // каждые 3 секунды
@@ -164,6 +166,7 @@ public final class BedWarsOverlay {
         cachedTeamStatsAtMs = 0L;
 
         bedData.clear();
+        bedDataByPos.clear();
         bedScanTick = 0;
         scanState.active = false;
         scanState.center = BlockPos.ZERO;
@@ -237,7 +240,7 @@ public final class BedWarsOverlay {
                         && bs.getValue(BedBlock.PART) == BedPart.HEAD) {
                     DyeColor color = bed.getColor();
                     BlockPos pos = mpos.immutable();
-                    BedInfo prev = bedData.get(color);
+                    BedInfo prev = bedDataByPos.get(pos);
                     DefenseSample sample = calcDefense(mc, mpos);
                     int def = sample.score();
                     if (prev != null && prev.alive() && prev.pos().equals(pos)) {
@@ -247,7 +250,10 @@ public final class BedWarsOverlay {
                             def = stabilizeDefense(prev.defScore(), def);
                         }
                     }
-                    bedData.put(color, new BedInfo(pos, true, def));
+                    BedInfo next = new BedInfo(pos, color, true, def);
+                    bedDataByPos.put(pos, next);
+                    // Fast color index is refreshed each scan; this keeps interim reads valid.
+                    bedData.put(color, next);
                 }
             }
             processed++;
@@ -273,14 +279,36 @@ public final class BedWarsOverlay {
     }
 
     private static void finalizeScan(Minecraft mc, BlockPos center) {
-        // Для ранее найденных кроватей, которые теперь в радиусе — проверяем, не снесли ли
-        for (Map.Entry<DyeColor, BedInfo> entry : bedData.entrySet()) {
+        // Для ранее найденных кроватей, которые теперь в радиусе — проверяем, не снесли ли.
+        for (Map.Entry<BlockPos, BedInfo> entry : bedDataByPos.entrySet()) {
             BedInfo info = entry.getValue();
             if (!info.alive()) continue;
             if (!inScanRange(center, info.pos())) continue;
             BlockState bs = mc.level.getBlockState(info.pos());
             if (!(bs.getBlock() instanceof BedBlock)) {
-                bedData.put(entry.getKey(), new BedInfo(info.pos(), false, 0));
+                bedDataByPos.put(entry.getKey(), new BedInfo(info.pos(), info.color(), false, 0));
+            }
+        }
+        rebuildBedColorIndex(center);
+    }
+
+    private static void rebuildBedColorIndex(BlockPos center) {
+        bedData.clear();
+        for (BedInfo info : bedDataByPos.values()) {
+            BedInfo prev = bedData.get(info.color());
+            if (prev == null) {
+                bedData.put(info.color(), info);
+                continue;
+            }
+            // Prefer alive entries; for equal status, prefer the one closer to current scan center.
+            if (info.alive() && !prev.alive()) {
+                bedData.put(info.color(), info);
+                continue;
+            }
+            if (info.alive() == prev.alive()) {
+                if (info.pos().distSqr(center) < prev.pos().distSqr(center)) {
+                    bedData.put(info.color(), info);
+                }
             }
         }
     }
@@ -634,6 +662,8 @@ public final class BedWarsOverlay {
             etaSeenAtMs.put(playerId, nowMs);
             return etaRaw;
         }
+        // Clamp extreme values to keep UI readable and stable.
+        etaRaw = Math.min(20.0, etaRaw);
         Double prev = etaSmoothedByPlayer.get(playerId);
         double smoothed;
         if (prev == null) {
@@ -643,8 +673,8 @@ public final class BedWarsOverlay {
             // Anti-jitter: clamp abrupt per-tick jump.
             if (delta > ETA_MAX_STEP_PER_TICK) delta = ETA_MAX_STEP_PER_TICK;
             if (delta < -ETA_MAX_STEP_PER_TICK) delta = -ETA_MAX_STEP_PER_TICK;
-            // Slightly faster adaptation when target is consistently closing in.
-            double alpha = delta < 0 ? Math.min(0.24, ETA_SMOOTH_ALPHA * 1.7) : ETA_SMOOTH_ALPHA;
+            // Faster adaptation when target starts closing; avoids stale overestimated ETA.
+            double alpha = delta < 0 ? Math.min(0.45, ETA_SMOOTH_ALPHA * 1.9) : ETA_SMOOTH_ALPHA;
             smoothed = prev + delta * alpha;
         }
         etaSmoothedByPlayer.put(playerId, smoothed);
@@ -1306,17 +1336,25 @@ public final class BedWarsOverlay {
     }
 
     private static double etaToContact(LocalPlayer self, AbstractClientPlayer p, double dist) {
-        double vx = p.getX() - p.xo;
-        double vz = p.getZ() - p.zo;
         double rx = self.getX() - p.getX();
         double rz = self.getZ() - p.getZ();
         double rlen = Math.sqrt(rx * rx + rz * rz);
         if (rlen < 1.0e-6) return 0.0;
+
+        // Relative velocity (enemy against player), projected on line-of-sight.
+        double evx = p.getX() - p.xo;
+        double evz = p.getZ() - p.zo;
+        double svx = self.getX() - self.xo;
+        double svz = self.getZ() - self.zo;
+        double rvx = evx - svx;
+        double rvz = evz - svz;
+
         double nx = rx / rlen;
         double nz = rz / rlen;
-        double closingPerTick = vx * nx + vz * nz;
-        if (closingPerTick <= 0.02) return Double.POSITIVE_INFINITY;
-        return (dist / closingPerTick) / 20.0;
+        double closingPerTick = rvx * nx + rvz * nz;
+        if (closingPerTick <= 0.018) return Double.POSITIVE_INFINITY;
+        double etaSec = (rlen / closingPerTick) / 20.0;
+        return Mth.clamp(etaSec, 0.0, 20.0);
     }
 
     private static String moveDir(AbstractClientPlayer p) {
@@ -1480,24 +1518,40 @@ public final class BedWarsOverlay {
         Minecraft mc = Minecraft.getInstance();
         if (team == null || mc.level == null) return null;
 
+        BedInfo inferred = allowInferenceFallback ? inferBedByTeamPlayers(mc, team, strictInference) : null;
+
         // Primary mapping: team color -> bed dye.
         DyeColor dye = teamColorToDye(team);
         if (dye != null) {
             BedInfo direct = bedData.get(dye);
-            if (direct != null) return direct;
+            if (direct != null) {
+                // If there are multiple beds with same dye, prefer position-based inference.
+                if (inferred != null && countBedsByColor(dye) > 1) return inferred;
+                return direct;
+            }
         }
 
         // Additional mapping: some servers use nearby palette variants for team colors.
         for (DyeColor alt : teamColorAlternatives(team)) {
             BedInfo byAlt = bedData.get(alt);
-            if (byAlt != null) return byAlt;
+            if (byAlt != null) {
+                if (inferred != null && countBedsByColor(alt) > 1) return inferred;
+                return byAlt;
+            }
         }
 
         // Fallback for servers with custom scoreboard formatting:
         // pick the closest known bed to the members of this team.
         // For own team we avoid this heuristic to prevent false "alive" bed status.
-        if (!allowInferenceFallback) return null;
-        return inferBedByTeamPlayers(mc, team, strictInference);
+        return inferred;
+    }
+
+    private static int countBedsByColor(DyeColor color) {
+        int count = 0;
+        for (BedInfo info : bedDataByPos.values()) {
+            if (info != null && info.color() == color) count++;
+        }
+        return count;
     }
 
     private static BedInfo inferBedByTeamPlayers(Minecraft mc, PlayerTeam team, boolean strictInference) {
@@ -1514,14 +1568,8 @@ public final class BedWarsOverlay {
         double bestAvg = Double.MAX_VALUE;
         double secondBestAvg = Double.MAX_VALUE;
 
-        // Deduplicate beds by position because bedData is keyed by dye.
-        Map<BlockPos, BedInfo> uniqueBeds = new LinkedHashMap<>();
-        for (BedInfo info : bedData.values()) {
+        for (BedInfo info : bedDataByPos.values()) {
             if (info == null) continue;
-            uniqueBeds.putIfAbsent(info.pos(), info);
-        }
-
-        for (BedInfo info : uniqueBeds.values()) {
             double sumSq = 0.0;
             for (AbstractClientPlayer p : teamPlayers) {
                 sumSq += p.blockPosition().distSqr(info.pos());

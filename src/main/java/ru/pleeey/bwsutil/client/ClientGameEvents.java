@@ -8,6 +8,8 @@ import ru.pleeey.bwsutil.client.overlay.ScopeOverlay;
 import ru.pleeey.bwsutil.client.screen.ScopeConfigScreen;
 import ru.pleeey.bwsutil.config.ScopeConfig;
 import net.minecraft.client.Minecraft;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
 import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.ItemUseAnimation;
 import net.minecraft.world.item.ItemStack;
@@ -65,20 +67,31 @@ public class ClientGameEvents {
         boolean isBowInHands = mc.player.getMainHandItem().getItem() instanceof BowItem
                 || mc.player.getOffhandItem().getItem() instanceof BowItem;
         boolean isConsumableInMainHand = isConsumable(mc.player.getMainHandItem());
+        boolean isFireballInHands = isFireball(mc.player.getMainHandItem())
+                || isFireball(mc.player.getOffhandItem());
         boolean isUsingOffhandConsumable = mc.player.isUsingItem()
                 && isConsumable(mc.player.getUseItem())
                 && mc.player.getOffhandItem() == mc.player.getUseItem();
 
         // Legacy behavior requested: if bow is in hand, suppress both channels.
-        boolean suppressRmb = isGuiOpen || isBowInHands || isConsumableInMainHand || isUsingOffhandConsumable;
+        boolean suppressRmb = isGuiOpen || isBowInHands || isConsumableInMainHand || isUsingOffhandConsumable || isFireballInHands;
         boolean suppressLmb = isGuiOpen || isBowInHands;
         AutoclickerBridgeClient.setInputSuppression(suppressLmb, suppressRmb);
         AutoclickerBridgeClient.tickSuppressionPulse();
     }
 
     private static boolean isConsumable(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return false;
         ItemUseAnimation anim = stack.getUseAnimation();
         return anim == ItemUseAnimation.EAT || anim == ItemUseAnimation.DRINK;
+    }
+
+    private static boolean isFireball(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return false;
+        Identifier id = BuiltInRegistries.ITEM.getKey(stack.getItem());
+        if (id == null) return false;
+        String path = id.getPath();
+        return path.contains("fire_charge") || path.contains("fireball");
     }
 
     private static void handlePlusMinusActions(Minecraft mc) {
