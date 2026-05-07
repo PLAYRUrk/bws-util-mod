@@ -1506,8 +1506,9 @@ public final class BedWarsOverlay {
             if (myTeam != null && myTeam.equals(t)) continue;
             List<AbstractClientPlayer> pl = aliveByTeam.getOrDefault(t, List.of());
             BedInfo bed = bedForTeam(t, true, false);
-            boolean hasMembers = !t.getPlayers().isEmpty();
-            if (pl.isEmpty() && bed == null && !hasMembers) continue;
+            // Do not show "noise" scoreboard teams:
+            // keep only currently active teams or teams with known bed state.
+            if (pl.isEmpty() && bed == null) continue;
             int nc = teamDisplayColor(mc, t);
             stats.add(new TeamStat(t, t != null ? cap(t.getName(), 7) : "?",
                 nc, pl.size(), computeScore(pl), bestArmorIn(pl), false, bed));
