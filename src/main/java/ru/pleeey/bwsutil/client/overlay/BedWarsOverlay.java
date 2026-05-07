@@ -471,7 +471,7 @@ public final class BedWarsOverlay {
         }
         boolean useCachedTeamStats = !shouldRecomputeLive && cacheFresh(cachedTeamStatsAtMs);
         List<TeamStat> teamStats = cachedTeamStats;
-        boolean showTable = teamStats.size() >= 2;
+        boolean showTable = !teamStats.isEmpty();
 
         if (shouldRecomputeLive) {
             boolean useCacheAnySnapshot = useCachedPlayers || useCachedTeamStats;
@@ -1484,20 +1484,45 @@ public final class BedWarsOverlay {
                                                   List<AbstractClientPlayer> enemies,
                                                   List<AbstractClientPlayer> teammates,
                                                   PlayerTeam myTeam) {
-        Map<PlayerTeam, List<AbstractClientPlayer>> enemyGroups = new LinkedHashMap<>();
+        Map<PlayerTeam, List<AbstractClientPlayer>> aliveByTeam = new LinkedHashMap<>();
         for (AbstractClientPlayer p : enemies) {
             PlayerTeam t = mc.level.getScoreboard().getPlayersTeam(p.getScoreboardName());
-            enemyGroups.computeIfAbsent(t, k -> new ArrayList<>()).add(p);
+            if (t != null) aliveByTeam.computeIfAbsent(t, k -> new ArrayList<>()).add(p);
+        }
+        for (AbstractClientPlayer p : teammates) {
+            PlayerTeam t = mc.level.getScoreboard().getPlayersTeam(p.getScoreboardName());
+            if (t != null) aliveByTeam.computeIfAbsent(t, k -> new ArrayList<>()).add(p);
+        }
+        if (self instanceof AbstractClientPlayer acp && myTeam != null) {
+            aliveByTeam.computeIfAbsent(myTeam, k -> new ArrayList<>()).add(acp);
         }
 
         List<TeamStat> stats = new ArrayList<>();
+        Set<PlayerTeam> addedEnemyTeams = new LinkedHashSet<>();
 
-        for (Map.Entry<PlayerTeam, List<AbstractClientPlayer>> e : enemyGroups.entrySet()) {
-            PlayerTeam t  = e.getKey();
-            List<AbstractClientPlayer> pl = e.getValue();
+        // Use scoreboard teams as a source of truth so teams don't disappear when all members are dead/respawning.
+        for (PlayerTeam t : mc.level.getScoreboard().getPlayerTeams()) {
+            if (t == null) continue;
+            if (myTeam != null && myTeam.equals(t)) continue;
+            List<AbstractClientPlayer> pl = aliveByTeam.getOrDefault(t, List.of());
+            BedInfo bed = bedForTeam(t, true, false);
+            boolean hasMembers = !t.getPlayers().isEmpty();
+            if (pl.isEmpty() && bed == null && !hasMembers) continue;
             int nc = teamDisplayColor(mc, t);
             stats.add(new TeamStat(t, t != null ? cap(t.getName(), 7) : "?",
-                nc, pl.size(), computeScore(pl), bestArmorIn(pl), false,
+                nc, pl.size(), computeScore(pl), bestArmorIn(pl), false, bed));
+            addedEnemyTeams.add(t);
+        }
+
+        // Keep backward compatibility: include alive enemy teams that may be absent from scoreboard team list.
+        for (Map.Entry<PlayerTeam, List<AbstractClientPlayer>> e : aliveByTeam.entrySet()) {
+            PlayerTeam t = e.getKey();
+            if (t == null) continue;
+            if (myTeam != null && myTeam.equals(t)) continue;
+            if (addedEnemyTeams.contains(t)) continue;
+            List<AbstractClientPlayer> pl = e.getValue();
+            int nc = teamDisplayColor(mc, t);
+            stats.add(new TeamStat(t, cap(t.getName(), 7), nc, pl.size(), computeScore(pl), bestArmorIn(pl), false,
                 bedForTeam(t, true, false)));
         }
 
