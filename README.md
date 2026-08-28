@@ -2,7 +2,7 @@
 
 Клиентский Forge-мод (`modId`: `bws_util`) для BedWars и лука в `Minecraft 1.21.11`.
 
-Текущая версия: `1.5.0`.
+Текущая версия: `1.5.1`.
 
 ## Что умеет мод
 
@@ -61,7 +61,6 @@
 - `Show range markers`
 - `Show rangefinder`
 - `Show charge bar`
-- `Emergency block swap`
 
 ### BedWars helper + sound
 
@@ -71,6 +70,7 @@
 - `Fireball warning sound` (on/off)
 - `Void warning sound` (on/off)
 - `Match log (chat events)` (on/off)
+- `Emergency block swap` (on/off)
 - `Fireball volume` (`0..100`)
 - `Void volume` (`0..100`)
 

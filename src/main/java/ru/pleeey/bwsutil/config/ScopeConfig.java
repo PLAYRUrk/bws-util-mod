@@ -22,6 +22,8 @@ public class ScopeConfig {
     public static final ForgeConfigSpec.IntValue VOID_WARNING_VOLUME;
     public static final ForgeConfigSpec.BooleanValue EMERGENCY_BLOCK_SWAP_ENABLED;
     public static final ForgeConfigSpec.BooleanValue MATCH_LOG_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue AUTO_AIM_ENABLED;
+    public static final ForgeConfigSpec.IntValue     AUTO_AIM_STRENGTH;
 
     static {
         BUILDER.comment("BWS Util client settings");
@@ -85,6 +87,14 @@ public class ScopeConfig {
         MATCH_LOG_ENABLED = BUILDER
             .comment("Track BedWars chat events (bed destruction, team elimination) and show a match log")
             .define("match_log_enabled", true);
+
+        AUTO_AIM_ENABLED = BUILDER
+            .comment("AUTO scope mode: steer the view toward the ballistic lead point while drawing the bow")
+            .define("auto_aim_enabled", false);
+
+        AUTO_AIM_STRENGTH = BUILDER
+            .comment("Auto-aim pull per tick in percent of the remaining error (100 = instant snap)")
+            .defineInRange("auto_aim_strength", 35, 5, 100);
 
         SPEC = BUILDER.build();
     }

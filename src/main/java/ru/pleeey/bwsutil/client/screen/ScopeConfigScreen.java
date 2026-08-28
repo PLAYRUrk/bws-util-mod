@@ -27,8 +27,10 @@ public class ScopeConfigScreen extends Screen {
         int midX = width / 2;
         int leftX = midX - 155;
         int rightX = midX + 5;
-        int startY = 44;
-        int row = 22;
+        // Шаг и старт подобраны так, чтобы обе колонки помещались по высоте после добавления
+        // авто-доводки: в левой теперь 6 тумблеров + слайдер, в правой 7 тумблеров + 2 слайдера.
+        int startY = 38;
+        int row = 21;
         int colW = 150;
         int btnW = 48;
 
@@ -54,8 +56,10 @@ public class ScopeConfigScreen extends Screen {
             ScopeConfig.SHOW_RANGEFINDER::get, ScopeConfig.SHOW_RANGEFINDER::set));
         addRenderableWidget(toggleButton(leftX, tY + row * 3, colW, "Show charge bar",
             ScopeConfig.SHOW_CHARGE_BAR::get, ScopeConfig.SHOW_CHARGE_BAR::set));
-        addRenderableWidget(toggleButton(leftX, tY + row * 4, colW, "Emergency block swap",
-            ScopeConfig.EMERGENCY_BLOCK_SWAP_ENABLED::get, ScopeConfig.EMERGENCY_BLOCK_SWAP_ENABLED::set));
+        addRenderableWidget(toggleButton(leftX, tY + row * 4, colW, "Auto-aim (AUTO mode)",
+            ScopeConfig.AUTO_AIM_ENABLED::get, ScopeConfig.AUTO_AIM_ENABLED::set));
+        addRenderableWidget(new RangeSlider(leftX, tY + row * 5, colW, 20,
+            "Auto-aim strength", ScopeConfig.AUTO_AIM_STRENGTH, 5, 100));
 
         int rY = startY + 16;
         addRenderableWidget(toggleButton(rightX, rY, colW, "Fireball Threat",
@@ -70,11 +74,13 @@ public class ScopeConfigScreen extends Screen {
             ScopeConfig.VOID_WARNING_SOUND::get, ScopeConfig.VOID_WARNING_SOUND::set));
         addRenderableWidget(toggleButton(rightX, rY + row * 5, colW, "Match log (chat events)",
             ScopeConfig.MATCH_LOG_ENABLED::get, ScopeConfig.MATCH_LOG_ENABLED::set));
+        addRenderableWidget(toggleButton(rightX, rY + row * 6, colW, "Emergency block swap",
+            ScopeConfig.EMERGENCY_BLOCK_SWAP_ENABLED::get, ScopeConfig.EMERGENCY_BLOCK_SWAP_ENABLED::set));
 
-        addRenderableWidget(new PercentSlider(rightX, rY + row * 6, colW, 20,
-            "Fireball volume", ScopeConfig.FIREBALL_WARNING_VOLUME));
-        addRenderableWidget(new PercentSlider(rightX, rY + row * 7 + 2, colW, 20,
-            "Void volume", ScopeConfig.VOID_WARNING_VOLUME));
+        addRenderableWidget(new RangeSlider(rightX, rY + row * 7, colW, 20,
+            "Fireball volume", ScopeConfig.FIREBALL_WARNING_VOLUME, 0, 100));
+        addRenderableWidget(new RangeSlider(rightX, rY + row * 8 + 2, colW, 20,
+            "Void volume", ScopeConfig.VOID_WARNING_VOLUME, 0, 100));
 
         addRenderableWidget(Button.builder(Component.literal("Close"), btn -> onClose())
             .bounds(midX - 50, height - 26, 100, 20).build());
@@ -87,7 +93,7 @@ public class ScopeConfigScreen extends Screen {
         int midX = width / 2;
         int leftX = midX - 155;
         int rightX = midX + 5;
-        int startY = 44;
+        int startY = 38;
         g.drawCenteredString(font, TITLE, width / 2, 16, 0xFFFFFFFF);
         g.drawString(font, "Scope", leftX, startY, 0xFFCCCCCC);
         g.drawString(font, "Zeroing Distance:", leftX, startY + 8, 0xFF9F9F9F);
@@ -148,30 +154,41 @@ public class ScopeConfigScreen extends Screen {
         }
     }
 
-    private static final class PercentSlider extends AbstractSliderButton {
+    /**
+     * Слайдер для целочисленной настройки в процентах.
+     *
+     * <p>Границы задаются явно: {@code defineInRange} не проверяет значение в {@code set()},
+     * поэтому слайдер обязан сам держаться в допустимом диапазоне ключа.</p>
+     */
+    private static final class RangeSlider extends AbstractSliderButton {
         private final String label;
         private final net.minecraftforge.common.ForgeConfigSpec.IntValue configValue;
+        private final int min;
+        private final int max;
 
-        PercentSlider(int x, int y, int w, int h, String label,
-                      net.minecraftforge.common.ForgeConfigSpec.IntValue configValue) {
-            super(x, y, w, h, Component.empty(), configValue.get() / 100.0);
+        RangeSlider(int x, int y, int w, int h, String label,
+                    net.minecraftforge.common.ForgeConfigSpec.IntValue configValue,
+                    int min, int max) {
+            super(x, y, w, h, Component.empty(), (configValue.get() - min) / (double) (max - min));
             this.label = label;
             this.configValue = configValue;
+            this.min = min;
+            this.max = max;
             updateMessage();
         }
 
         @Override
         protected void updateMessage() {
-            setMessage(Component.literal(label + ": " + toPercent(value) + "%"));
+            setMessage(Component.literal(label + ": " + toValue(value) + "%"));
         }
 
         @Override
         protected void applyValue() {
-            configValue.set(toPercent(value));
+            configValue.set(toValue(value));
         }
 
-        private static int toPercent(double v) {
-            return Math.max(0, Math.min(100, (int) Math.round(v * 100.0)));
+        private int toValue(double v) {
+            return Math.max(min, Math.min(max, (int) Math.round(min + v * (max - min))));
         }
     }
 }
