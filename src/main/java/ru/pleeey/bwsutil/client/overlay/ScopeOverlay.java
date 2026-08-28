@@ -1,6 +1,7 @@
 package ru.pleeey.bwsutil.client.overlay;
 
 import ru.pleeey.bwsutil.client.aim.AimSolver;
+import ru.pleeey.bwsutil.client.aim.TargetTracker;
 import ru.pleeey.bwsutil.config.ScopeConfig;
 import ru.pleeey.bwsutil.physics.ArrowPhysics;
 import net.minecraft.client.Minecraft;
@@ -53,6 +54,23 @@ public final class ScopeOverlay {
     /** Ниже этого рассогласования доводка не трогает камеру — иначе она мелко дрожит. */
     private static final double AUTO_AIM_DEADZONE_DEG = 0.05;
     /**
+     * Доля, на которую сглаженное решение подтягивается к сырому за тик.
+     *
+     * <p>Фильтр стоит между решателем и контроллером камеры: даже с усреднённой скоростью цели
+     * решение слегка дышит, и без фильтра это дыхание уходит прямо в поворот камеры.</p>
+     */
+    private static final double SOLUTION_SMOOTHING = 0.35;
+    /** За столько тиков сила доводки нарастает от нуля — чтобы не дёргать камеру при захвате. */
+    private static final int AUTO_AIM_EASE_TICKS = 4;
+    /**
+     * Сколько тиков держаться за последнее решение, по которому попадание было возможно.
+     *
+     * <p>Цель нырнула за укрытие — прицел остаётся там, где по ней ещё можно было попасть, и
+     * подхватывает её без рывка, когда она снова высунется. Наводиться в стену смысла нет.</p>
+     */
+    private static final int SOLUTION_HOLD_TICKS = 10;
+
+    /**
      * Захват сбрасывается, если цель ушла дальше этого угла от взгляда. Шире конуса захвата:
      * цель имеет право двигаться, пока игрок держит натяжение, но не имеет права оказаться
      * за спиной.
@@ -78,12 +96,39 @@ public final class ScopeOverlay {
     /** Решение по цели за последний тик; рендер только рисует его. */
     private static AimSolver.Solution cachedSolution = null;
 
+    /** Усреднение скорости захваченной цели. */
+    private static final TargetTracker targetTracker = new TargetTracker();
+
+    /** Последнее решение, по которому попадание было возможно — по нему и ведётся камера. */
+    private static AimSolver.Solution steerSolution = null;
+    private static int steerHoldTicks = 0;
+
+    /** Точка прицеливания прошлого тика, чтобы выбор не прыгал по телу цели. */
+    private static int aimIndex = AimSolver.NO_CANDIDATE;
+
+    // Фильтр решения и плавный вход.
+    private static double smoothedYaw = 0.0;
+    private static double smoothedPitch = 0.0;
+    private static boolean smoothingPrimed = false;
+    private static int engageTicks = 0;
+
     /** Сбрасывает состояние при выходе с сервера / выгрузке мира. */
     public static void resetState() {
         lockedTarget = null;
         cachedMeasuredDistance = -1;
         autoAimEngaged = false;
         cachedSolution = null;
+        steerSolution = null;
+        targetTracker.reset();
+        resetAimFilter();
+    }
+
+    /** Сбрасывает фильтр, разгон и выбранную точку прицеливания. */
+    private static void resetAimFilter() {
+        aimIndex = AimSolver.NO_CANDIDATE;
+        smoothingPrimed = false;
+        engageTicks = 0;
+        steerHoldTicks = 0;
     }
 
     public static void toggleEnabled() { enabled = !enabled; }
@@ -134,25 +179,58 @@ public final class ScopeOverlay {
             // Выстрел произведён, натяжение отменено или режим сменился — сбрасываем захват.
             lockedTarget = null;
             cachedSolution = null;
+            steerSolution = null;
+            resetAimFilter();
             return;
         }
 
         LivingEntity target = acquireTarget(mc, player);
         if (target == null) {
             cachedSolution = null;
+            steerSolution = null;
+            resetAimFilter();
             return;
         }
 
+        targetTracker.observe(target);
+
         float charge = BowItem.getPowerForTime(player.getTicksUsingItem());
-        cachedSolution = AimSolver.solve(player, target, charge, 1.0f, true);
-        if (cachedSolution == null) return;
+        cachedSolution = AimSolver.solve(player, target, charge, targetTracker, aimIndex);
+        if (cachedSolution == null) {
+            resetAimFilter();
+            return;
+        }
+        aimIndex = cachedSolution.aimIndex();
+        updateSteerSolution(target);
 
         // Доводка включается только на полном натяжении: до этого момента скорость стрелы
         // растёт каждый тик, решение вместе с ней уползает, и камера ехала бы за целью,
         // которая на самом деле стоит на месте.
         if (mc.screen == null && ScopeConfig.AUTO_AIM_ENABLED.get() && isFullyDrawn(player)) {
-            applyAutoAim(player, cachedSolution);
+            applyAutoAim(player, steerSolution);
+        } else {
+            engageTicks = 0;
         }
+    }
+
+    /**
+     * Обновляет решение, по которому ведётся камера.
+     *
+     * <p>Перекрытая цель не отбрасывает прицел в стену: удерживается последнее решение с
+     * попаданием, и только когда оно устареет, доводка отпускает камеру.</p>
+     */
+    private static void updateSteerSolution(LivingEntity target) {
+        if (cachedSolution.clear()) {
+            steerSolution = cachedSolution;
+            steerHoldTicks = 0;
+            return;
+        }
+        if (steerSolution != null && steerSolution.target() == target
+            && steerHoldTicks < SOLUTION_HOLD_TICKS) {
+            steerHoldTicks++;
+            return;
+        }
+        steerSolution = null;
     }
 
     /** Натянут ли лук полностью (дальше сила выстрела не растёт). */
@@ -175,8 +253,15 @@ public final class ScopeOverlay {
             && AimSolver.angleToTarget(player, current) <= RETARGET_CONE_DEG;
 
         if (!keep) {
+            LivingEntity previous = current;
             current = AimSolver.pickTarget(mc, player, AUTO_CONE_RAD);
             lockedTarget = current != null ? new WeakReference<>(current) : null;
+            if (current != previous) {
+                // Фильтр и выбранная точка привязаны к конкретной цели: перенос их на новую
+                // заставил бы камеру ползти от старого решения к новому через полэкрана.
+                steerSolution = null;
+                resetAimFilter();
+            }
         }
         return current;
     }
@@ -192,16 +277,40 @@ public final class ScopeOverlay {
      * продолжает работать: доводка добавляется к текущему повороту, а не заменяет его.</p>
      */
     private static void applyAutoAim(LocalPlayer player, AimSolver.Solution aim) {
-        double dYaw   = Mth.wrapDegrees(aim.yaw() - player.getYRot());
-        double dPitch = Mth.clamp(aim.pitch(), -90.0, 90.0) - player.getXRot();
-        if (Math.abs(dYaw) > AUTO_AIM_MAX_YAW_DEG) return;
+        if (aim == null) {
+            // Попадания нет и удержание истекло — камера остаётся за игроком.
+            engageTicks = 0;
+            return;
+        }
+
+        double desiredYaw   = aim.yaw();
+        double desiredPitch = Mth.clamp(aim.pitch(), -90.0, 90.0);
+
+        if (!smoothingPrimed) {
+            smoothedYaw = desiredYaw;
+            smoothedPitch = desiredPitch;
+            smoothingPrimed = true;
+        } else {
+            smoothedYaw += Mth.wrapDegrees(desiredYaw - smoothedYaw) * SOLUTION_SMOOTHING;
+            smoothedPitch += (desiredPitch - smoothedPitch) * SOLUTION_SMOOTHING;
+        }
+
+        double dYaw   = Mth.wrapDegrees(smoothedYaw - player.getYRot());
+        double dPitch = smoothedPitch - player.getXRot();
+        if (Math.abs(dYaw) > AUTO_AIM_MAX_YAW_DEG) {
+            engageTicks = 0;
+            return;
+        }
 
         autoAimEngaged = true;
+        if (engageTicks < AUTO_AIM_EASE_TICKS) engageTicks++;
+
         if (Math.abs(dYaw) < AUTO_AIM_DEADZONE_DEG && Math.abs(dPitch) < AUTO_AIM_DEADZONE_DEG) {
             return;
         }
 
-        double strength = Mth.clamp(ScopeConfig.AUTO_AIM_STRENGTH.get() / 100.0, 0.05, 1.0);
+        double ease = engageTicks / (double) AUTO_AIM_EASE_TICKS;
+        double strength = Mth.clamp(ScopeConfig.AUTO_AIM_STRENGTH.get() / 100.0, 0.05, 1.0) * ease;
         double maxStep  = AUTO_AIM_MAX_STEP_DEG * strength;
         double stepYaw   = Mth.clamp(dYaw   * strength, -maxStep, maxStep);
         double stepPitch = Mth.clamp(dPitch * strength, -maxStep, maxStep);

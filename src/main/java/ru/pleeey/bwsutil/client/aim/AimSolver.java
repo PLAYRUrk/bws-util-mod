@@ -30,17 +30,59 @@ import java.util.Optional;
  */
 public final class AimSolver {
 
+    /** Точки прицеливания по высоте хитбокса: грудь, голова, ноги. */
+    private static final double[] VERTICAL_FRACTIONS = { 0.62, 0.88, 0.35 };
+
     /**
-     * Точки прицеливания по высоте хитбокса, в порядке предпочтения.
+     * Боковые смещения точек прицеливания в долях полуширины хитбокса.
      *
-     * <p>Грудь идёт первой как самая широкая часть; голова — запасной вариант, который часто
-     * единственный виден из-за низкого укрытия; ноги помогают, когда цель стоит за выступом
-     * сверху. Перебор по этим точкам и есть учёт рельефа «рядом с целью».</p>
+     * <p>Без них все кандидаты лежат на одной вертикальной оси, и цель, высунувшаяся из-за
+     * укрытия боком, считается полностью закрытой: попасть по открытому краю корпуса физически
+     * можно, а решение возвращалось «в стену». Крайние доли меньше единицы — это отступ от
+     * грани, чтобы стрела не чиркала по ней.</p>
      */
-    private static final double[] AIM_FRACTIONS = { 0.62, 0.88, 0.28 };
+    private static final double[] LATERAL_FRACTIONS = { 0.0, 0.55, -0.55, 0.85, -0.85 };
+
+    /** Штраф за выбор точки не по центру корпуса — чем ближе к краю, тем меньше запас. */
+    private static final double LATERAL_PENALTY = 2.0;
+    /** Штраф за высоту: грудь, голова, ноги. */
+    private static final double[] VERTICAL_PENALTY = { 0.0, 0.5, 0.8 };
+
+    /** Порядок обхода сетки: от самой надёжной точки к краевым. */
+    private static final int[] CANDIDATE_ORDER;
+
+    static {
+        int count = VERTICAL_FRACTIONS.length * LATERAL_FRACTIONS.length;
+        Integer[] order = new Integer[count];
+        for (int i = 0; i < count; i++) order[i] = i;
+        java.util.Arrays.sort(order, java.util.Comparator.comparingDouble(AimSolver::candidateScore));
+
+        CANDIDATE_ORDER = new int[count];
+        for (int i = 0; i < count; i++) CANDIDATE_ORDER[i] = order[i];
+    }
+
+    private static double candidateScore(int index) {
+        int vertical = index / LATERAL_FRACTIONS.length;
+        int lateral  = index % LATERAL_FRACTIONS.length;
+        return Math.abs(LATERAL_FRACTIONS[lateral]) * LATERAL_PENALTY + VERTICAL_PENALTY[vertical];
+    }
+
+    /** «Предыдущего выбора нет» для гистерезиса точки прицеливания. */
+    public static final int NO_CANDIDATE = -1;
 
     /** Доля высоты, по которой считается упреждение (центр масс). */
     private static final double LEAD_ANCHOR = 0.62;
+    /** Итерации схождения упреждения: время полёта зависит от дистанции, дистанция — от него. */
+    private static final int LEAD_ITERATIONS = 3;
+
+    /** Гравитация и затухание вертикальной скорости игрока — для предсказания падающей цели. */
+    private static final double PLAYER_GRAVITY = 0.08;
+    private static final double PLAYER_DRAG    = 0.98;
+    /** Насколько глубоко искать землю под предсказанной позицией. */
+    private static final double GROUND_PROBE_DEPTH = 12.0;
+
+    /** Сколько траекторий проверять настильным проходом, прежде чем перейти к навесу. */
+    private static final int FLAT_TRACE_BUDGET = 4;
 
     /** Потолок симуляции полёта. Навесная траектория на 100+ блоков укладывается с запасом. */
     private static final int TRACE_MAX_TICKS = 140;
@@ -71,92 +113,160 @@ public final class AimSolver {
      * @param lofted             решение навесное (стрела перекидывается через препятствие)
      * @param clear              траектория проверена и доходит до цели, не задев блок
      * @param aimPoint           точка, в которую целимся
+     * @param aimIndex           индекс точки в сетке — возвращается в следующий тик, чтобы
+     *                           выбор не прыгал по телу цели
      */
     public record Solution(LivingEntity target, double yaw, double pitch,
                            double horizDist, double predictedHorizDist,
-                           boolean lofted, boolean clear, Vec3 aimPoint) {}
+                           boolean lofted, boolean clear, Vec3 aimPoint, int aimIndex) {}
 
     // ── Решение ─────────────────────────────────────────────────────────────
 
     /**
      * Считает решение по цели.
      *
-     * @param charge       натяжение лука (0..1), оно же множитель начальной скорости
-     * @param partialTick  {@code 1.0f} для тик-логики, интерполяция кадра — для рендера
-     * @param checkTerrain перебирать точки прицеливания и дуги, проверяя траекторию по блокам
+     * <p>Порядок работы: упреждение по усреднённой скорости → сетка точек прицеливания на
+     * предсказанном хитбоксе → отсев по прямой видимости → симуляция полёта. Настильный проход
+     * идёт первым и по всей сетке, навесной — только по центральной колонке и только если
+     * настильно не вышло.</p>
+     *
+     * @param charge         натяжение лука (0..1), оно же множитель начальной скорости
+     * @param tracker        накопитель скорости цели, обновлённый в этом тике
+     * @param preferredIndex точка, выбранная в прошлом тике, или {@link #NO_CANDIDATE}
      * @return решение или {@code null}, если цель недостижима на текущем натяжении
      */
-    public static Solution solve(LocalPlayer shooter, LivingEntity target,
-                                 float charge, float partialTick, boolean checkTerrain) {
-        if (charge <= 0.01f || shooter.level() == null) return null;
+    public static Solution solve(LocalPlayer shooter, LivingEntity target, float charge,
+                                 TargetTracker tracker, int preferredIndex) {
+        Level level = shooter.level();
+        if (charge <= 0.01f || level == null) return null;
         double power = charge;
 
-        Vec3 eye = shooter.getEyePosition(partialTick);
-        double bx = Mth.lerp(partialTick, target.xo, target.getX());
-        double by = Mth.lerp(partialTick, target.yo, target.getY());
-        double bz = Mth.lerp(partialTick, target.zo, target.getZ());
-        Vec3 base = new Vec3(bx, by, bz);
+        Vec3 eye = shooter.getEyePosition();
+        Vec3 base = target.position();
 
-        double currentHoriz = Math.hypot(bx - eye.x, bz - eye.z);
+        double currentHoriz = Math.hypot(base.x - eye.x, base.z - eye.z);
         if (currentHoriz < 0.5) return null;
 
         double height = Math.max(0.5, target.getBbHeight());
-        Vec3 lead = predictLead(eye, base, trackedVelocity(target), height, power);
+        double halfWidth = Math.max(0.15, target.getBbWidth() / 2.0);
+
+        Vec3 lead = predictLead(level, shooter, eye, base, tracker, height, power);
 
         // Хитбокс в предсказанной позиции: именно с ним сверяется симуляция полёта.
         AABB predictedBox = target.getBoundingBox().move(
             lead.x - target.getX(), lead.y - target.getY(), lead.z - target.getZ());
 
-        // Порядок перебора: сначала все точки прицеливания настильной дугой, и только потом
-        // навесная. Навес на 50 блоках летит ~5 секунд против одной — по живой цели он почти
-        // всегда промах, поэтому смена точки на теле важнее смены дуги.
+        // Горизонтальная нормаль к направлению выстрела — вдоль неё разносятся боковые точки.
+        double toX = lead.x - eye.x;
+        double toZ = lead.z - eye.z;
+        double toLen = Math.max(1.0e-6, Math.hypot(toX, toZ));
+        Vec3 right = new Vec3(-toZ / toLen, 0.0, toX / toLen);
+
         Solution fallback = null;
-        for (int arc = 0; arc < 2; arc++) {
-            for (double fraction : AIM_FRACTIONS) {
-                Vec3 aimPoint = new Vec3(lead.x, lead.y + height * fraction, lead.z);
-                double horiz = Math.max(1.0, Math.hypot(aimPoint.x - eye.x, aimPoint.z - eye.z));
-                double dy = aimPoint.y - eye.y;
-                double yaw = Math.toDegrees(Math.atan2(-(aimPoint.x - eye.x), aimPoint.z - eye.z));
+        int traced = 0;
 
-                double elevation = ArrowPhysics.solveElevations(horiz, dy, power)[arc];
-                if (Double.isNaN(elevation)) continue;
-
-                boolean lofted = arc == 1;
-                if (!checkTerrain) {
-                    return new Solution(target, yaw, -elevation, currentHoriz, horiz,
-                        lofted, true, aimPoint);
-                }
-                if (fallback == null) {
-                    fallback = new Solution(target, yaw, -elevation, currentHoriz, horiz,
-                        lofted, false, aimPoint);
-                }
-
-                // Симуляция ограничена ожидаемым временем полёта: дальше цели проверять нечего,
-                // а перекрытая цель иначе каждый тик прогоняла бы полный потолок по всем дугам.
-                int flightTicks = ArrowPhysics.flightTicks(horiz, elevation, power);
-                if (flightTicks < 0) continue;
-                int cap = Math.min(TRACE_MAX_TICKS, flightTicks + TRACE_TICK_MARGIN);
-
-                if (trajectoryReaches(shooter, eye, yaw, -elevation, power, predictedBox, horiz, cap)) {
-                    return new Solution(target, yaw, -elevation, currentHoriz, horiz,
-                        lofted, true, aimPoint);
-                }
+        // ── Настильный проход ───────────────────────────────────────────────────────────
+        // Точка прошлого тика проверяется первой: пока по ней можно попасть, она и остаётся.
+        // Иначе выбор прыгает по телу цели каждый тик, а вместе с ним скачет и угол доводки —
+        // ширина хитбокса игрока это ~7° на дистанции пяти блоков.
+        if (preferredIndex >= 0 && preferredIndex < CANDIDATE_ORDER.length) {
+            Solution kept = evaluate(shooter, level, eye, target, lead, right, height, halfWidth,
+                power, predictedBox, currentHoriz, preferredIndex, false, true);
+            if (kept != null) {
+                if (kept.clear()) return kept;
+                fallback = kept;
+                traced++;
             }
         }
-        // Чистой траектории нет — отдаём прямое решение с пометкой: игрок увидит, что выстрел
-        // упрётся в блок, а доводка всё равно наведётся (стрелять или нет — его решение).
+
+        for (int index : CANDIDATE_ORDER) {
+            if (index == preferredIndex) continue;
+            if (traced >= FLAT_TRACE_BUDGET) break;
+
+            Solution candidate = evaluate(shooter, level, eye, target, lead, right, height,
+                halfWidth, power, predictedBox, currentHoriz, index, false, true);
+            if (candidate == null) continue;
+            if (candidate.clear()) return candidate;
+            if (fallback == null) fallback = candidate;
+            traced++;
+        }
+
+        // ── Навесной проход: центральная колонка, без отсева по видимости ────────────────
+        // Навес существует ровно для случая, когда прямой видимости нет ни у одной точки:
+        // прогонять его через тот же фильтр — значит выключить его полностью.
+        for (int vertical = 0; vertical < VERTICAL_FRACTIONS.length; vertical++) {
+            int index = vertical * LATERAL_FRACTIONS.length; // боковое смещение 0
+            Solution candidate = evaluate(shooter, level, eye, target, lead, right, height,
+                halfWidth, power, predictedBox, currentHoriz, index, true, false);
+            if (candidate == null) continue;
+            if (candidate.clear()) return candidate;
+            if (fallback == null) fallback = candidate;
+        }
+
+        // Чистой траектории нет. Решение отдаётся с пометкой clear = false; наводиться по нему
+        // в стену смысла нет, и что делать дальше — решает вызывающий код.
         return fallback;
     }
 
     /**
+     * Строит и проверяет одного кандидата сетки.
+     *
+     * @param lofted     брать навесную дугу вместо настильной
+     * @param requireLos отсеивать точку, если до неё нет прямой видимости
+     * @return кандидат (поле {@code clear} — результат симуляции) или {@code null}, если точка
+     *         отсеяна либо такой дуги не существует
+     */
+    private static Solution evaluate(LocalPlayer shooter, Level level, Vec3 eye,
+                                     LivingEntity target, Vec3 lead, Vec3 right,
+                                     double height, double halfWidth, double power,
+                                     AABB predictedBox, double currentHoriz,
+                                     int index, boolean lofted, boolean requireLos) {
+        int verticalIndex = index / LATERAL_FRACTIONS.length;
+        int lateralIndex  = index % LATERAL_FRACTIONS.length;
+        double side = LATERAL_FRACTIONS[lateralIndex] * halfWidth;
+
+        Vec3 aimPoint = new Vec3(
+            lead.x + right.x * side,
+            lead.y + height * VERTICAL_FRACTIONS[verticalIndex],
+            lead.z + right.z * side);
+
+        // Дешёвый отсев: один луч против полной симуляции полёта.
+        if (requireLos && !hasLineOfSight(shooter, eye, aimPoint)) return null;
+
+        double horiz = Math.max(1.0, Math.hypot(aimPoint.x - eye.x, aimPoint.z - eye.z));
+        double dy = aimPoint.y - eye.y;
+        double yaw = Math.toDegrees(Math.atan2(-(aimPoint.x - eye.x), aimPoint.z - eye.z));
+
+        double elevation = ArrowPhysics.solveElevations(horiz, dy, power)[lofted ? 1 : 0];
+        if (Double.isNaN(elevation)) return null;
+
+        // Симуляция ограничена ожидаемым временем полёта: дальше цели проверять нечего.
+        int flightTicks = ArrowPhysics.flightTicks(horiz, elevation, power);
+        if (flightTicks < 0) return null;
+        int cap = Math.min(TRACE_MAX_TICKS, flightTicks + TRACE_TICK_MARGIN);
+
+        boolean clear = trajectoryReaches(shooter, eye, yaw, -elevation, power,
+            predictedBox, horiz, cap);
+        return new Solution(target, yaw, -elevation, currentHoriz, horiz,
+            lofted, clear, aimPoint, index);
+    }
+
+    // ── Упреждение ──────────────────────────────────────────────────────────
+
+    /**
      * Позиция цели на момент прилёта стрелы.
      *
-     * <p>Две итерации: время полёта зависит от дистанции, а дистанция — от предсказанной
-     * позиции. Одной итерации не хватает по быстрой цели на большой дистанции.</p>
+     * <p>Итерации нужны потому, что время полёта зависит от дистанции, а дистанция — от
+     * предсказанной позиции. Кроме упреждения по горизонтали здесь два ограничителя: падение
+     * цели и упор в стену. Оба убирают систематический промах, а не шум.</p>
      */
-    private static Vec3 predictLead(Vec3 eye, Vec3 base, Vec3 velocity, double height, double power) {
+    private static Vec3 predictLead(Level level, LocalPlayer shooter, Vec3 eye, Vec3 base,
+                                    TargetTracker tracker, double height, double power) {
+        Vec3 velocity = tracker.velocity();
+        double vy0 = tracker.isGrounded() ? 0.0 : velocity.y;
+
         Vec3 lead = base;
-        for (int i = 0; i < 2; i++) {
+        for (int i = 0; i < LEAD_ITERATIONS; i++) {
             double horiz = Math.max(1.0, Math.hypot(lead.x - eye.x, lead.z - eye.z));
             double dy = lead.y + height * LEAD_ANCHOR - eye.y;
 
@@ -165,22 +275,69 @@ public final class AimSolver {
 
             int ticks = ArrowPhysics.flightTicks(horiz, elevation, power);
             if (ticks < 0) return lead;
-            lead = base.add(velocity.scale(ticks));
+
+            lead = new Vec3(
+                base.x + velocity.x * ticks,
+                base.y + verticalOffset(vy0, ticks),
+                base.z + velocity.z * ticks);
         }
-        return lead;
+
+        lead = clampToWall(level, shooter, base, lead, height);
+        return clampToGround(level, shooter, base, lead);
     }
 
     /**
-     * Скорость цели по разнице позиций за тик.
+     * Насколько цель опустится за {@code ticks} тиков свободного падения.
      *
-     * <p>{@code getDeltaMovement()} на клиенте для чужих сущностей почти всегда ноль: сервер
-     * шлёт обновления позиции, а не векторы скорости. При {@code hurtTime > 0} дельту портит
-     * кнокбэк, поэтому упреждение на это время обнуляется. Вертикаль игнорируется: наземная
-     * цель остаётся на земле, а прыжок предсказывать вреднее, чем не предсказывать.</p>
+     * <p>Считается по тиковой модели игрока, а не формулой: с затуханием скорости замкнутого
+     * выражения нет. Для цели на земле вызывается с нулевой скоростью и возвращает ноль —
+     * прыжок предсказывать вреднее, чем не предсказывать.</p>
      */
-    private static Vec3 trackedVelocity(LivingEntity target) {
-        if (target.hurtTime > 0) return Vec3.ZERO;
-        return new Vec3(target.getX() - target.xo, 0.0, target.getZ() - target.zo);
+    private static double verticalOffset(double vy0, int ticks) {
+        if (vy0 == 0.0) return 0.0;
+        double vy = vy0;
+        double offset = 0.0;
+        for (int i = 0; i < ticks; i++) {
+            vy = (vy - PLAYER_GRAVITY) * PLAYER_DRAG;
+            offset += vy;
+            if (offset < -TRACE_DROP_LIMIT) break;
+        }
+        return offset;
+    }
+
+    /**
+     * Обрезает упреждение по первому блоку на пути цели.
+     *
+     * <p>Иначе противник, бегущий вдоль стены, «уводит» точку прицеливания сквозь неё, хотя сам
+     * там остановится.</p>
+     */
+    private static Vec3 clampToWall(Level level, LocalPlayer shooter, Vec3 base, Vec3 lead,
+                                    double height) {
+        double midY = base.y + height * 0.5;
+        Vec3 from = new Vec3(base.x, midY, base.z);
+        Vec3 to   = new Vec3(lead.x, midY, lead.z);
+        if (from.distanceToSqr(to) < 1.0e-6) return lead;
+
+        HitResult hit = level.clip(new ClipContext(from, to, ClipContext.Block.COLLIDER,
+            ClipContext.Fluid.NONE, shooter));
+        if (hit.getType() == HitResult.Type.MISS) return lead;
+
+        Vec3 stop = hit.getLocation();
+        return new Vec3(stop.x, lead.y, stop.z);
+    }
+
+    /** Не даёт предсказанию падения уехать под пол. */
+    private static Vec3 clampToGround(Level level, LocalPlayer shooter, Vec3 base, Vec3 lead) {
+        if (lead.y >= base.y) return lead;
+
+        Vec3 from = new Vec3(lead.x, base.y + 0.5, lead.z);
+        Vec3 to   = new Vec3(lead.x, base.y - GROUND_PROBE_DEPTH, lead.z);
+        HitResult hit = level.clip(new ClipContext(from, to, ClipContext.Block.COLLIDER,
+            ClipContext.Fluid.NONE, shooter));
+        if (hit.getType() == HitResult.Type.MISS) return lead;
+
+        double groundY = hit.getLocation().y;
+        return lead.y < groundY ? new Vec3(lead.x, groundY, lead.z) : lead;
     }
 
     // ── Симуляция полёта ────────────────────────────────────────────────────
