@@ -26,3 +26,6 @@ forge_README.txt
 forge*changelog.txt
 
 /autoclicker_techdocs/
+# runtime logs
+*.log
+logs

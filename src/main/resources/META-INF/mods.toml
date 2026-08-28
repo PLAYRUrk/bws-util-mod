@@ -5,7 +5,7 @@ license = "MIT"
 [[mixins]]
 config = "mixins.bws_util.json"
 
-issueTrackerURL = "https://github.com/example/bws-util-mod/issues"
+issueTrackerURL = "https://github.com/Pleeey/bws-util-mod/issues"
 
 [[mods]]
     modId = "bws_util"
@@ -14,7 +14,8 @@ issueTrackerURL = "https://github.com/example/bws-util-mod/issues"
     authors = "Pleeey"
     logoFile = ""
     description = '''
-Bow scope with zeroing, BedWars tactical overlay, and utility HUD features.
+Ballistic bow scope with zeroing and lead prediction, plus a BedWars tactical overlay:
+threat panel, team power table, compass radar and a chat-driven match log.
     '''
 
 [[dependencies.bws_util]]

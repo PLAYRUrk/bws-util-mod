@@ -29,6 +29,11 @@ public final class ScopeOverlay {
     private static final int STADIA_TICK = 6;
 
     private static final double MAX_RANGE       = 512.0;
+    /**
+     * Entity lookup range for the rangefinder. Deliberately much shorter than {@link #MAX_RANGE}:
+     * the block raycast is cheap at any distance, but an entity AABB half a map long is not.
+     */
+    private static final double ENTITY_SCAN_RANGE = 128.0;
     private static final double AUTO_CONE_RAD   = Math.toRadians(15.0); // 15° поиск цели
 
     // ── Состояние прицела ────────────────────────────────────────────────────
@@ -40,6 +45,15 @@ public final class ScopeOverlay {
 
     /** Захваченная цель в AUTO-режиме. Управляется через tick(), не через render(). */
     private static WeakReference<LivingEntity> lockedTarget = null;
+
+    /** Дальномер считается раз в тик; рендер только читает результат. */
+    private static double cachedMeasuredDistance = -1;
+
+    /** Сбрасывает состояние при выходе с сервера / выгрузке мира. */
+    public static void resetState() {
+        lockedTarget = null;
+        cachedMeasuredDistance = -1;
+    }
 
     public static void toggleEnabled() { enabled = !enabled; }
     public static boolean isEnabled()  { return enabled; }
@@ -69,6 +83,14 @@ public final class ScopeOverlay {
      */
     public static void tick(Minecraft mc, LocalPlayer player) {
         if (!enabled || mc.level == null) return;
+
+        // Rangefinder is a raycast plus an entity sweep — once per tick is plenty, and it keeps
+        // the cost off the render thread's per-frame path.
+        cachedMeasuredDistance =
+            (mc.screen == null && currentMode == ScopeMode.MANUAL
+                && ScopeConfig.SHOW_RANGEFINDER.get() && isScopeInputActive(mc))
+                ? measureDistance(mc, player)
+                : -1;
 
         boolean isDrawing = player.isUsingItem()
             && (player.getUseItem().getItem() instanceof BowItem);
@@ -144,8 +166,7 @@ public final class ScopeOverlay {
             }
         } else {
             // ── MANUAL: полный прицел ────────────────────────────────────────
-            double measuredDist = ScopeConfig.SHOW_RANGEFINDER.get()
-                ? measureDistance(mc, player) : -1;
+            double measuredDist = ScopeConfig.SHOW_RANGEFINDER.get() ? cachedMeasuredDistance : -1;
 
             drawCenterMark(g, cx, cy, dimColor);
             drawMainCrosshair(g, cx, ay, color, outlineColor);
@@ -454,11 +475,12 @@ public final class ScopeOverlay {
         }
 
         double entityDist = MAX_RANGE;
-        AABB searchBox = new AABB(eye, end).inflate(2.0);
+        Vec3 entityEnd = eye.add(look.scale(ENTITY_SCAN_RANGE));
+        AABB searchBox = new AABB(eye, entityEnd).inflate(2.0);
         for (Entity entity : mc.level.getEntities(player, searchBox)) {
             if (entity.isSpectator() || !entity.isAlive()) continue;
             AABB box = entity.getBoundingBox().inflate(entity.getPickRadius());
-            Optional<Vec3> hit = box.clip(eye, end);
+            Optional<Vec3> hit = box.clip(eye, entityEnd);
             if (hit.isPresent()) {
                 double d = eye.distanceTo(hit.get());
                 if (d < entityDist) entityDist = d;
@@ -471,8 +493,13 @@ public final class ScopeOverlay {
 
     // ── Таблица дистанций ────────────────────────────────────────────────────
 
+    /**
+     * Distance ladder for the stadia marks. Values are deduplicated: at small zeroing
+     * distances several formulas collapse onto the same number (e.g. {@code z/4} and
+     * {@code z/2} both give 10), which used to draw the same mark twice.
+     */
     private static int[] buildDistanceTable(int z) {
-        return new int[]{
+        int[] raw = {
             Math.max(10, z / 4),
             Math.max(10, z / 2),
             z * 3 / 4,
@@ -482,6 +509,12 @@ public final class ScopeOverlay {
             z * 2,
             z * 3
         };
+        java.util.TreeSet<Integer> unique = new java.util.TreeSet<>();
+        for (int d : raw) unique.add(d);
+        int[] out = new int[unique.size()];
+        int i = 0;
+        for (int d : unique) out[i++] = d;
+        return out;
     }
 
     // ── Примитивы ────────────────────────────────────────────────────────────

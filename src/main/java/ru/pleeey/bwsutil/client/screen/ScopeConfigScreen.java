@@ -54,6 +54,8 @@ public class ScopeConfigScreen extends Screen {
             ScopeConfig.SHOW_RANGEFINDER::get, ScopeConfig.SHOW_RANGEFINDER::set));
         addRenderableWidget(toggleButton(leftX, tY + row * 3, colW, "Show charge bar",
             ScopeConfig.SHOW_CHARGE_BAR::get, ScopeConfig.SHOW_CHARGE_BAR::set));
+        addRenderableWidget(toggleButton(leftX, tY + row * 4, colW, "Emergency block swap",
+            ScopeConfig.EMERGENCY_BLOCK_SWAP_ENABLED::get, ScopeConfig.EMERGENCY_BLOCK_SWAP_ENABLED::set));
 
         int rY = startY + 16;
         addRenderableWidget(toggleButton(rightX, rY, colW, "Fireball Threat",
@@ -66,6 +68,8 @@ public class ScopeConfigScreen extends Screen {
             ScopeConfig.FIREBALL_WARNING_SOUND::get, ScopeConfig.FIREBALL_WARNING_SOUND::set));
         addRenderableWidget(toggleButton(rightX, rY + row * 4, colW, "Void warning sound",
             ScopeConfig.VOID_WARNING_SOUND::get, ScopeConfig.VOID_WARNING_SOUND::set));
+        addRenderableWidget(toggleButton(rightX, rY + row * 5, colW, "Match log (chat events)",
+            ScopeConfig.MATCH_LOG_ENABLED::get, ScopeConfig.MATCH_LOG_ENABLED::set));
 
         addRenderableWidget(new PercentSlider(rightX, rY + row * 6, colW, 20,
             "Fireball volume", ScopeConfig.FIREBALL_WARNING_VOLUME));
@@ -93,14 +97,18 @@ public class ScopeConfigScreen extends Screen {
     }
 
     @Override
+    public void onClose() {
+        // ConfigValue.set only updates the in-memory config; without this the settings changed
+        // here are lost when the game exits.
+        ScopeConfig.save();
+        super.onClose();
+    }
+
+    @Override
     public boolean isPauseScreen() { return false; }
 
     private interface BoolSetter { void set(boolean value); }
     private interface BoolGetter { boolean get(); }
-
-    private Button toggleButton(int x, int y, int w, String label, boolean value, BoolSetter setter) {
-        return toggleButton(x, y, w, label, () -> value, setter);
-    }
 
     private Button toggleButton(int x, int y, int w, String label, BoolGetter getter, BoolSetter setter) {
         return Button.builder(toggleLabel(label, getter.get()), btn -> {

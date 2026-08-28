@@ -21,22 +21,37 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BedPart;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.scores.PlayerTeam;
+import ru.pleeey.bwsutil.client.match.MatchTracker;
 import ru.pleeey.bwsutil.config.ScopeConfig;
+import ru.pleeey.bwsutil.util.TeamColors;
 
 import java.util.*;
+import java.util.function.Predicate;
 
+/**
+ * BedWars tactical HUD: threat panel, team power table, match log and a compass radar.
+ *
+ * <p><b>Where work happens:</b> every piece of game logic — player scanning, threat scoring,
+ * bed detection, alert evaluation and sounds — runs in {@link #tick(Minecraft)}. {@link #render}
+ * only draws the snapshot that tick produced. That split matters for more than performance:
+ * rendering is skipped while a screen is open or the HUD is hidden, so logic living there used
+ * to go silent exactly when the player opened chat.</p>
+ */
 public final class BedWarsOverlay {
 
     private static boolean enabled = false;
 
     public static void toggleEnabled() {
         enabled = !enabled;
-        resetCache();
+        resetState();
     }
-    public static boolean isEnabled()  { return enabled; }
+
+    public static boolean isEnabled() { return enabled; }
 
     private BedWarsOverlay() {}
 
@@ -50,32 +65,56 @@ public final class BedWarsOverlay {
     private static final int DANGER_M    = 15;
     private static final int THREAT_ROW_SHIFT_X = 14;
     private static final int THREAT_ROW_EXTRA_BG = 26;
-    private static final long HUD_CACHE_TTL_MS = 30_000L;
-    private static final long HUD_LIVE_RECOMPUTE_INTERVAL_MS = 120L;
+
+    /** Snapshot rebuild cadence, in client ticks. Two ticks (~100 ms) reads as instant. */
+    private static final int SNAPSHOT_INTERVAL_TICKS = 2;
+
     private static final double ETA_SMOOTH_ALPHA = 0.22;
     private static final double ETA_MAX_STEP_PER_TICK = 0.45;
-    private static final int RADAR_SIZE = 92;
+
+    // ── Константы радара ─────────────────────────────────────────────────────
+
+    private static final int RADAR_SIZE   = 96;
+    private static final int RADAR_MARGIN = 8;
+    /** Gap between the plotted area and the outer rim, reserved for the compass letters. */
+    private static final int RADAR_RIM_PAD = 8;
+
     private static final int RADAR_RANGE_BLOCKS_DEFAULT = 48;
     private static final int RADAR_RANGE_BLOCKS_MIN = 24;
     private static final int RADAR_RANGE_BLOCKS_MAX = 96;
     private static final int RADAR_RANGE_BLOCKS_STEP = 4;
-    private static final int[] RADAR_RANGE_MARKS = new int[] {10, 20, 30};
     private static final int RADAR_Y_RANGE = 10;
     private static final long RADAR_CONSTRUCTIONS_CACHE_MS = 420L;
     private static final int RADAR_CACHE_MOVE_THRESHOLD = 4;
-    private static final int RADAR_MAX_CONSTRUCTION_MARKS = 180;
+    private static final int RADAR_MAX_CONSTRUCTION_MARKS = 220;
+
+    private static final int RADAR_BG        = 0xBF0C0F14;
+    private static final int RADAR_BG_INNER  = 0x59131A22;
+    private static final int RADAR_RIM       = 0x8C8FB4CE;
+    private static final int RADAR_RING      = 0x3D7FA6C4;
+    private static final int RADAR_SELF      = 0xFF6FE9F5;
+    private static final int RADAR_ENEMY     = 0xFFFF5555;
+    private static final int RADAR_ENEMY_AIM = 0xFFFFB03A;
+    private static final int RADAR_ENEMY_FAR = 0x8CFF5555;
+    private static final int RADAR_COMPASS   = 0x99C7D6E0;
+    private static final int RADAR_COMPASS_N = 0xFFE8F2F8;
+
+    private static int radarRangeBlocks = RADAR_RANGE_BLOCKS_DEFAULT;
+
+    // ── Константы помощников ─────────────────────────────────────────────────
+
     private static final long FIREBALL_SOUND_COOLDOWN_MS = 900L;
     private static final long VOID_SOUND_COOLDOWN_MS = 1_200L;
     private static final double RETREAT_SCAN_RADIUS = 26.0;
     private static final int RETREAT_SAMPLE_DIRECTIONS = 12;
     private static final double RETREAT_SAMPLE_DISTANCE = 7.0;
     private static final double RETREAT_SAMPLE_DISTANCE_FAR = 12.0;
-    private static int radarRangeBlocks = RADAR_RANGE_BLOCKS_DEFAULT;
 
-    // ── Кровати: кеш результатов сканирования ───────────────────────────────
+    // ── Кровати: сканирование ────────────────────────────────────────────────
 
     /** Информация о найденной кровати. */
     private record BedInfo(BlockPos pos, DyeColor color, boolean alive, int defScore) {}
+
     private record DefenseSample(int score, boolean complete) {}
 
     /** DyeColor → информация о кровати (null = ни разу не видели в радиусе). */
@@ -84,21 +123,29 @@ public final class BedWarsOverlay {
     private static final Map<BlockPos, BedInfo> bedDataByPos = new LinkedHashMap<>();
 
     private static int bedScanTick = 0;
-    private static final int SCAN_EVERY = 60;  // каждые 3 секунды
-    private static final int SCAN_RADIUS = 128; // блоков по XZ
-    private static final int SCAN_Y      = 48;  // блоков по Y
-    private static final int SCAN_BUDGET_PER_TICK = 14_000; // сколько блоков проверяем за тик
+    private static final int SCAN_EVERY = 60;          // каждые 3 секунды
+    private static final int SCAN_CHUNK_RADIUS = 8;    // 8 чанков = 128 блоков по XZ
+    private static final int SCAN_Y = 48;              // блоков по Y
+    private static final int SCAN_CHUNKS_PER_TICK = 32;
+
+    /**
+     * The scan walks loaded chunks and asks each section's palette whether a bed could be present
+     * at all, so sections without beds cost nothing. Walking raw block positions instead meant
+     * roughly 6.4 million {@code getBlockState} calls per pass, spread over ~23 seconds.
+     */
+    private static final Predicate<BlockState> IS_BED = state -> state.getBlock() instanceof BedBlock;
 
     private static final class BedScanState {
-        int minX, maxX, minZ, maxZ, minY, maxY;
-        int x, z, y;
+        int minCX, maxCX, minCZ, maxCZ;
+        int cx, cz;
+        int minY, maxY;
         boolean active;
         BlockPos center = BlockPos.ZERO;
     }
 
     private static final BedScanState scanState = new BedScanState();
 
-    // ── Данные одной команды для таблицы сил ─────────────────────────────────
+    // ── Снимок состояния боя ─────────────────────────────────────────────────
 
     private record TeamStat(
         PlayerTeam team,
@@ -125,66 +172,70 @@ public final class BedWarsOverlay {
         double etaSec,
         double threatScore
     ) {}
+
     private record RadarConstructionSample(int dx, int dz, int color) {}
 
     private static List<PlayerView> cachedEnemyViews = new ArrayList<>();
     private static List<PlayerView> cachedTeamViews  = new ArrayList<>();
-    private static long cachedPlayersAtMs = 0L;
-    private static long lastHudLiveRecomputeAtMs = 0L;
-    private static long lastBedScanCompletedAtMs = 0L;
+    private static List<TeamStat>   cachedTeamStats  = new ArrayList<>();
+
+    /**
+     * Live enemy entities kept for the radar. Positions are read at draw time so markers move
+     * smoothly between snapshots; the list itself is only rebuilt on tick.
+     */
+    private static List<AbstractClientPlayer> cachedRadarEnemies = new ArrayList<>();
+
+    private static int snapshotTick = 0;
+
     private static final Map<UUID, Double> etaSmoothedByPlayer = new HashMap<>();
     private static final Map<UUID, Long> etaSeenAtMs = new HashMap<>();
 
-    private static List<TeamStat> cachedTeamStats = new ArrayList<>();
-    private static long cachedTeamStatsAtMs = 0L;
     private static List<RadarConstructionSample> cachedRadarConstructions = new ArrayList<>();
     private static long cachedRadarConstructionsAtMs = 0L;
     private static int radarCacheCenterX;
     private static int radarCacheCenterY;
     private static int radarCacheCenterZ;
     private static int radarCacheRangeBlocks = RADAR_RANGE_BLOCKS_DEFAULT;
-    private static String fireballAlertText = "";
-    private static int fireballAlertColor = 0xFFFF5555;
+
     private static boolean fireballAlertDanger;
-    private static String bridgeAlertText = "";
-    private static int bridgeAlertColor = 0xFF55FF55;
     private static boolean bridgeAlertDanger;
     private static String retreatAlertText = "";
     private static int retreatAlertColor = 0xFFFF6666;
     private static boolean retreatAlertDanger;
     private static long lastFireballWarnAtMs;
     private static long lastVoidWarnAtMs;
-    private static String cachedFreshnessLabel = "LIVE";
 
-    private static void resetCache() {
+    /**
+     * Clears every per-match cache. Called when the overlay is toggled and when the player leaves
+     * a server, so bed data from one map never leaks into the next.
+     *
+     * <p>The radar zoom is intentionally preserved: it is a user preference, not match state.</p>
+     */
+    public static void resetState() {
         cachedEnemyViews = new ArrayList<>();
         cachedTeamViews = new ArrayList<>();
-        cachedPlayersAtMs = 0L;
-        lastHudLiveRecomputeAtMs = 0L;
-
         cachedTeamStats = new ArrayList<>();
-        cachedTeamStatsAtMs = 0L;
+        cachedRadarEnemies = new ArrayList<>();
+        snapshotTick = 0;
 
         bedData.clear();
         bedDataByPos.clear();
         bedScanTick = 0;
         scanState.active = false;
         scanState.center = BlockPos.ZERO;
-        lastBedScanCompletedAtMs = 0L;
-        radarRangeBlocks = RADAR_RANGE_BLOCKS_DEFAULT;
+
         etaSmoothedByPlayer.clear();
         etaSeenAtMs.clear();
+
         cachedRadarConstructions = new ArrayList<>();
         cachedRadarConstructionsAtMs = 0L;
-        fireballAlertText = "";
-        bridgeAlertText = "";
+
         fireballAlertDanger = false;
         bridgeAlertDanger = false;
         retreatAlertText = "";
         retreatAlertDanger = false;
         lastFireballWarnAtMs = 0L;
         lastVoidWarnAtMs = 0L;
-        cachedFreshnessLabel = "LIVE";
     }
 
     public static void increaseRadarScale() {
@@ -199,10 +250,15 @@ public final class BedWarsOverlay {
         cachedRadarConstructionsAtMs = 0L;
     }
 
-    // ── Периодическое сканирование кроватей (вызывается из ClientGameEvents) ─
+    // ── Тик: единственный источник состояния ─────────────────────────────────
 
+    /**
+     * Advances all overlay state by one client tick. Must be called even while a screen is open,
+     * otherwise fireball and void warnings stop firing the moment the player opens chat.
+     */
     public static void tick(Minecraft mc) {
         if (!enabled || mc.player == null || mc.level == null) return;
+
         if (scanState.active) {
             continueScanBeds(mc);
         } else if (++bedScanTick >= SCAN_EVERY) {
@@ -210,72 +266,103 @@ public final class BedWarsOverlay {
             startScanBeds(mc.player);
             continueScanBeds(mc);
         }
+
+        if (++snapshotTick >= SNAPSHOT_INTERVAL_TICKS) {
+            snapshotTick = 0;
+            refreshSnapshot(mc, mc.player);
+            refreshContextHelpers(mc, mc.player, System.currentTimeMillis());
+        }
     }
+
+    // ── Периодическое сканирование кроватей ──────────────────────────────────
 
     private static void startScanBeds(LocalPlayer player) {
         BlockPos center = player.blockPosition();
         scanState.center = center;
-        scanState.minX = center.getX() - SCAN_RADIUS;
-        scanState.maxX = center.getX() + SCAN_RADIUS;
-        scanState.minZ = center.getZ() - SCAN_RADIUS;
-        scanState.maxZ = center.getZ() + SCAN_RADIUS;
-        scanState.minY = Math.max(-64, center.getY() - SCAN_Y);
-        scanState.maxY = Math.min(320, center.getY() + SCAN_Y);
-        scanState.x = scanState.minX;
-        scanState.z = scanState.minZ;
-        scanState.y = scanState.minY;
+        scanState.minCX = (center.getX() >> 4) - SCAN_CHUNK_RADIUS;
+        scanState.maxCX = (center.getX() >> 4) + SCAN_CHUNK_RADIUS;
+        scanState.minCZ = (center.getZ() >> 4) - SCAN_CHUNK_RADIUS;
+        scanState.maxCZ = (center.getZ() >> 4) + SCAN_CHUNK_RADIUS;
+        scanState.minY = center.getY() - SCAN_Y;
+        scanState.maxY = center.getY() + SCAN_Y;
+        scanState.cx = scanState.minCX;
+        scanState.cz = scanState.minCZ;
         scanState.active = true;
     }
 
     private static void continueScanBeds(Minecraft mc) {
         if (!scanState.active) return;
-        BlockPos.MutableBlockPos mpos = new BlockPos.MutableBlockPos();
-        int processed = 0;
 
-        while (scanState.active && processed < SCAN_BUDGET_PER_TICK) {
-            mpos.set(scanState.x, scanState.y, scanState.z);
-            if (mc.level.isLoaded(mpos)) {
-                BlockState bs = mc.level.getBlockState(mpos);
-                if (bs.getBlock() instanceof BedBlock bed
-                        && bs.getValue(BedBlock.PART) == BedPart.HEAD) {
-                    DyeColor color = bed.getColor();
-                    BlockPos pos = mpos.immutable();
-                    BedInfo prev = bedDataByPos.get(pos);
-                    DefenseSample sample = calcDefense(mc, mpos);
-                    int def = sample.score();
-                    if (prev != null && prev.alive() && prev.pos().equals(pos)) {
-                        if (!sample.complete()) {
-                            def = prev.defScore(); // keep last stable value on incomplete chunk sample
-                        } else {
-                            def = stabilizeDefense(prev.defScore(), def);
-                        }
-                    }
-                    BedInfo next = new BedInfo(pos, color, true, def);
-                    bedDataByPos.put(pos, next);
-                    // Fast color index is refreshed each scan; this keeps interim reads valid.
-                    bedData.put(color, next);
-                }
-            }
+        int processed = 0;
+        while (scanState.active && processed < SCAN_CHUNKS_PER_TICK) {
+            scanChunkForBeds(mc, scanState.cx, scanState.cz);
             processed++;
 
-            scanState.y++;
-            if (scanState.y > scanState.maxY) {
-                scanState.y = scanState.minY;
-                scanState.z++;
-                if (scanState.z > scanState.maxZ) {
-                    scanState.z = scanState.minZ;
-                    scanState.x++;
-                    if (scanState.x > scanState.maxX) {
-                        scanState.active = false;
-                    }
+            scanState.cz++;
+            if (scanState.cz > scanState.maxCZ) {
+                scanState.cz = scanState.minCZ;
+                scanState.cx++;
+                if (scanState.cx > scanState.maxCX) {
+                    scanState.active = false;
                 }
             }
         }
 
         if (!scanState.active) {
             finalizeScan(mc, scanState.center);
-            lastBedScanCompletedAtMs = System.currentTimeMillis();
         }
+    }
+
+    private static void scanChunkForBeds(Minecraft mc, int chunkX, int chunkZ) {
+        LevelChunk chunk = mc.level.getChunkSource().getChunkNow(chunkX, chunkZ);
+        if (chunk == null) return;
+
+        LevelChunkSection[] sections = chunk.getSections();
+        BlockPos.MutableBlockPos mpos = new BlockPos.MutableBlockPos();
+
+        for (int i = 0; i < sections.length; i++) {
+            int sectionMinY = chunk.getMinY() + (i << 4);
+            if (sectionMinY + 15 < scanState.minY || sectionMinY > scanState.maxY) continue;
+
+            LevelChunkSection section = sections[i];
+            if (section.hasOnlyAir()) continue;
+            // Palette-level rejection: skips the 4096-block walk for every section without a bed.
+            if (!section.maybeHas(IS_BED)) continue;
+
+            for (int ly = 0; ly < 16; ly++) {
+                int worldY = sectionMinY + ly;
+                if (worldY < scanState.minY || worldY > scanState.maxY) continue;
+
+                for (int lx = 0; lx < 16; lx++) {
+                    for (int lz = 0; lz < 16; lz++) {
+                        BlockState bs = section.getBlockState(lx, ly, lz);
+                        if (!(bs.getBlock() instanceof BedBlock bed)) continue;
+                        if (bs.getValue(BedBlock.PART) != BedPart.HEAD) continue;
+
+                        mpos.set((chunkX << 4) + lx, worldY, (chunkZ << 4) + lz);
+                        recordBed(mc, mpos, bed);
+                    }
+                }
+            }
+        }
+    }
+
+    private static void recordBed(Minecraft mc, BlockPos.MutableBlockPos mpos, BedBlock bed) {
+        BlockPos pos = mpos.immutable();
+        BedInfo prev = bedDataByPos.get(pos);
+        DefenseSample sample = calcDefense(mc, mpos);
+        int def = sample.score();
+
+        if (prev != null && prev.alive()) {
+            if (!sample.complete()) {
+                def = prev.defScore(); // keep last stable value on incomplete chunk sample
+            } else {
+                def = stabilizeDefense(prev.defScore(), def);
+            }
+        }
+        // Only the by-position map is written during the pass. The colour index is rebuilt at the
+        // end of the scan, where a conflict between same-coloured beds can be resolved properly.
+        bedDataByPos.put(pos, new BedInfo(pos, bed.getColor(), true, def));
     }
 
     private static void finalizeScan(Minecraft mc, BlockPos center) {
@@ -284,9 +371,11 @@ public final class BedWarsOverlay {
             BedInfo info = entry.getValue();
             if (!info.alive()) continue;
             if (!inScanRange(center, info.pos())) continue;
+            if (!mc.level.isLoaded(info.pos())) continue;
+
             BlockState bs = mc.level.getBlockState(info.pos());
             if (!(bs.getBlock() instanceof BedBlock)) {
-                bedDataByPos.put(entry.getKey(), new BedInfo(info.pos(), info.color(), false, 0));
+                entry.setValue(new BedInfo(info.pos(), info.color(), false, 0));
             }
         }
         rebuildBedColorIndex(center);
@@ -305,10 +394,9 @@ public final class BedWarsOverlay {
                 bedData.put(info.color(), info);
                 continue;
             }
-            if (info.alive() == prev.alive()) {
-                if (info.pos().distSqr(center) < prev.pos().distSqr(center)) {
-                    bedData.put(info.color(), info);
-                }
+            if (info.alive() == prev.alive()
+                    && info.pos().distSqr(center) < prev.pos().distSqr(center)) {
+                bedData.put(info.color(), info);
             }
         }
     }
@@ -358,19 +446,15 @@ public final class BedWarsOverlay {
                 BlockState bs = mc.level.getBlockState(pos);
                 if (bs.isAir() || bs.getBlock() instanceof BedBlock) continue;
                 occupiedSlots++;
-                int tier = defenseTierByResistance(bs.getBlock().getExplosionResistance());
-                tierCounts[tier]++;
+                // Forge's state-aware variant; the plain Block accessor is deprecated because it
+                // ignores per-state and per-position modifiers.
+                tierCounts[defenseTierByResistance(bs.getExplosionResistance(mc.level, pos, null))]++;
             }
         }
 
         // Not enough direct shell coverage => treat as no defense, avoid stale "WOL".
-        if (shellSlots == 0) {
-            return new DefenseSample(0, true);
-        }
-        double coverage = occupiedSlots / (double) shellSlots;
-        if (coverage < 0.60) {
-            return new DefenseSample(0, true);
-        }
+        if (shellSlots == 0) return new DefenseSample(0, true);
+        if (occupiedSlots / (double) shellSlots < 0.60) return new DefenseSample(0, true);
 
         int bestTier = 1;
         for (int t = 2; t <= 4; t++) {
@@ -399,25 +483,18 @@ public final class BedWarsOverlay {
     private static int stabilizeDefense(int prev, int current) {
         if (current >= prev) return current;
         // Limit abrupt down-jumps caused by transient chunk streaming.
-        int maxDropPerScan = 14;
-        return Math.max(current, prev - maxDropPerScan);
+        return Math.max(current, prev - 14);
     }
 
     private static boolean inScanRange(BlockPos center, BlockPos pos) {
-        return Math.abs(pos.getX() - center.getX()) <= SCAN_RADIUS
-            && Math.abs(pos.getZ() - center.getZ()) <= SCAN_RADIUS
+        return Math.abs(pos.getX() - center.getX()) <= SCAN_CHUNK_RADIUS * 16
+            && Math.abs(pos.getZ() - center.getZ()) <= SCAN_CHUNK_RADIUS * 16
             && Math.abs(pos.getY() - center.getY()) <= SCAN_Y;
     }
 
-    // ── Основной рендер ──────────────────────────────────────────────────────
+    // ── Построение снимка ────────────────────────────────────────────────────
 
-    public static void render(GuiGraphics g, float partialTick) {
-        if (!enabled) return;
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null || mc.level == null || mc.screen != null) return;
-        if (mc.options.hideGui) return;
-
-        LocalPlayer self = mc.player;
+    private static void refreshSnapshot(Minecraft mc, LocalPlayer self) {
         PlayerTeam myTeam = mc.level.getScoreboard().getPlayersTeam(self.getScoreboardName());
 
         List<AbstractClientPlayer> enemies   = new ArrayList<>();
@@ -430,9 +507,9 @@ public final class BedWarsOverlay {
             ((myTeam != null && myTeam.equals(t)) ? teammates : enemies).add(p);
         }
 
-        // Heuristic for solo/1v8 modes: some servers have imperfect scoreboard team mapping.
-        // If it's clearly "one vs many", hide TEAM section to avoid showing wrong allies.
-        if (enemies.size() >= 6 && teammates.size() <= 4) {
+        // Solo modes: the scoreboard is the authority on whether the player has allies at all.
+        // The previous head-count heuristic hid real teammates in four-team modes.
+        if (myTeam == null || myTeam.getPlayers().size() <= 1) {
             teammates.clear();
         }
 
@@ -442,46 +519,107 @@ public final class BedWarsOverlay {
             .thenComparing(p -> p.getUUID().toString()));
         teammates.sort(Comparator.comparingDouble(self::distanceTo));
 
+        cachedEnemyViews = buildPlayerViews(mc, self, enemies);
+        cachedTeamViews  = buildPlayerViews(mc, self, teammates);
+        cachedTeamStats  = buildTeamStats(mc, self, enemies, teammates, myTeam);
+        cachedRadarEnemies = enemies;
+    }
+
+    private static List<PlayerView> buildPlayerViews(Minecraft mc, LocalPlayer self,
+                                                     List<AbstractClientPlayer> players) {
+        List<PlayerView> rows = new ArrayList<>(players.size());
         long now = System.currentTimeMillis();
-        boolean shouldRecomputeLive =
-            (now - lastHudLiveRecomputeAtMs) >= HUD_LIVE_RECOMPUTE_INTERVAL_MS
-                || lastHudLiveRecomputeAtMs == 0L;
-
-        if (shouldRecomputeLive) {
-            cachedEnemyViews = new ArrayList<>(buildPlayerViews(mc, self, enemies));
-            cachedTeamViews = new ArrayList<>(buildPlayerViews(mc, self, teammates));
-            cachedPlayersAtMs = now;
+        for (AbstractClientPlayer p : players) {
+            double dist  = self.distanceTo(p);
+            float hp     = p.getHealth();
+            float hpPct  = hp / Math.max(1f, p.getMaxHealth());
+            double dy    = p.getY() - self.getY();
+            double eta   = smoothEta(p.getUUID(), etaToContact(self, p, dist), now);
+            String dyStr = dy > 2.5 ? "+" + (int) dy : dy < -2.5 ? "" + (int) dy : "";
+            String etaTxt = (eta > 0 && eta < 20.0) ? " " + formatEta(eta) : "";
+            rows.add(new PlayerView(
+                cap(p.getName().getString(), 6),
+                nameColor(mc, p),
+                dir(self, p),
+                moveDir(p),
+                Math.round(hp),
+                hpPct,
+                (int) dist + "m" + dyStr + etaTxt,
+                (int) dist,
+                armorChar(p),
+                isAiming(p),
+                eta,
+                threatScore(self, p, dist, hpPct)
+            ));
         }
-        if (shouldRecomputeLive) {
-            lastHudLiveRecomputeAtMs = now;
-            refreshContextHelpers(mc, self, now);
-        }
+        purgeOldEta(now);
+        return rows;
+    }
 
-        boolean useCachedPlayers = !shouldRecomputeLive && cacheFresh(cachedPlayersAtMs);
+    private static double smoothEta(UUID playerId, double etaRaw, long nowMs) {
+        if (!Double.isFinite(etaRaw) || etaRaw <= 0.0) {
+            etaSeenAtMs.put(playerId, nowMs);
+            return etaRaw;
+        }
+        // Clamp extreme values to keep UI readable and stable.
+        etaRaw = Math.min(20.0, etaRaw);
+        Double prev = etaSmoothedByPlayer.get(playerId);
+        double smoothed;
+        if (prev == null) {
+            smoothed = etaRaw;
+        } else {
+            double delta = Mth.clamp(etaRaw - prev, -ETA_MAX_STEP_PER_TICK, ETA_MAX_STEP_PER_TICK);
+            // Faster adaptation when target starts closing; avoids stale overestimated ETA.
+            double alpha = delta < 0 ? Math.min(0.45, ETA_SMOOTH_ALPHA * 1.9) : ETA_SMOOTH_ALPHA;
+            smoothed = prev + delta * alpha;
+        }
+        etaSmoothedByPlayer.put(playerId, smoothed);
+        etaSeenAtMs.put(playerId, nowMs);
+        return smoothed;
+    }
+
+    private static String formatEta(double etaSec) {
+        // Quantize to 0.2s to eliminate fast micro-flicker in text.
+        return String.format(Locale.ROOT, "%.1fs", Math.round(etaSec * 5.0) / 5.0);
+    }
+
+    private static void purgeOldEta(long nowMs) {
+        Iterator<Map.Entry<UUID, Long>> it = etaSeenAtMs.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<UUID, Long> e = it.next();
+            if (nowMs - e.getValue() > 10_000L) {
+                etaSmoothedByPlayer.remove(e.getKey());
+                it.remove();
+            }
+        }
+    }
+
+    // ── Основной рендер ──────────────────────────────────────────────────────
+
+    /** Draws the cached snapshot. Performs no game logic — see {@link #tick(Minecraft)}. */
+    public static void render(GuiGraphics g, float partialTick) {
+        if (!enabled) return;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null || mc.level == null || mc.screen != null) return;
+        if (mc.options.hideGui) return;
+
         List<PlayerView> enemyViews = cachedEnemyViews;
         List<PlayerView> teamViews  = cachedTeamViews;
+        List<TeamStat>   teamStats  = cachedTeamStats;
 
         PlayerView priorityTarget = pickPriorityTarget(enemyViews);
         boolean danger = priorityTarget != null
             && (priorityTarget.distM() < DANGER_M || priorityTarget.aiming() || priorityTarget.etaSec() <= 2.5);
 
-        if (shouldRecomputeLive) {
-            cachedTeamStats = new ArrayList<>(buildTeamStats(mc, self, enemies, teammates, myTeam));
-            cachedTeamStatsAtMs = now;
-        }
-        boolean useCachedTeamStats = !shouldRecomputeLive && cacheFresh(cachedTeamStatsAtMs);
-        List<TeamStat> teamStats = cachedTeamStats;
         boolean showTable = !teamStats.isEmpty();
-
-        if (shouldRecomputeLive) {
-            boolean useCacheAnySnapshot = useCachedPlayers || useCachedTeamStats;
-            cachedFreshnessLabel = computeFreshnessLabel(useCacheAnySnapshot);
-        }
+        List<MatchTracker.LogLine> matchLog = ScopeConfig.MATCH_LOG_ENABLED.get()
+            ? MatchTracker.recentLines() : List.of();
 
         int rows = 1   // заголовок
             + (enemyViews.isEmpty() ? 0 : 1 + Math.min(enemyViews.size(), MAX_ENEMIES))
             + (teamViews.isEmpty()  ? 0 : 1 + Math.min(teamViews.size(),  MAX_TEAM))
-            + (showTable ? 1 + teamStats.size() : 0);
+            + (showTable ? 1 + teamStats.size() : 0)
+            + (matchLog.isEmpty() ? 0 : 1 + matchLog.size());
 
         int panelX = 6;
         int panelY = 6;
@@ -491,64 +629,7 @@ public final class BedWarsOverlay {
         g.fill(panelX - 1, panelY - 1, panelX + PANEL_W + 1, panelY + panelH + 1, 0x22000000);
         g.fill(panelX, panelY, panelX + PANEL_W, panelY + panelH, 0x11000000);
 
-        int y = panelY + PAD;
-
-        // Заголовок
-        String title = "◉ BEDWARS";
-        int titleX = panelX + PAD;
-        txt(g, mc, title, titleX, y, 0xFFFFFFFF);
-        boolean useCacheAny = useCachedPlayers || useCachedTeamStats;
-        String freshness = freshnessLabel();
-        int rightEdgeX = panelX + PANEL_W - PAD;
-
-        int freshnessX = titleX + mc.font.width(title) + 8;
-        int gap = 4;
-        int charW = Math.max(1, mc.font.width("m"));
-
-        // Hint on the right may collide with freshness; shorten one of them to keep a clean header line.
-        String hint = "";
-        if (!enemyViews.isEmpty()) {
-            hint = enemyViews.size() + " hostile";
-        }
-
-        int freshnessMinX = titleX + mc.font.width(title) + 2;
-        freshnessX = Math.max(freshnessX, freshnessMinX);
-
-        if (!hint.isEmpty()) {
-            int hintW = mc.font.width(hint);
-            int hintX = rightEdgeX - hintW;
-            int freshnessRightLimit = hintX - gap;
-
-            int availFreshW = freshnessRightLimit - freshnessX;
-            if (availFreshW <= 0) {
-                freshness = cap(freshness, Math.max(3, 3)); // fallback; prevents overlap
-            } else if (mc.font.width(freshness) > availFreshW) {
-                int maxCharsFresh = Math.max(3, availFreshW / charW);
-                freshness = cap(freshness, maxCharsFresh);
-            }
-
-            // Recompute after possible shortening.
-            int freshnessW = mc.font.width(freshness);
-            int availHintW = rightEdgeX - (freshnessX + freshnessW + gap);
-            if (availHintW <= 0) {
-                hint = "";
-            } else if (mc.font.width(hint) > availHintW) {
-                int maxCharsHint = Math.max(3, availHintW / charW);
-                hint = cap(hint, maxCharsHint);
-            }
-        }
-
-        if (!freshness.isEmpty()) {
-            txt(g, mc, freshness, freshnessX, y, freshnessColor(useCacheAny));
-        }
-        if (!hint.isEmpty()) {
-            txt(g, mc, hint, rightEdgeX - mc.font.width(hint), y, 0xFFFF5555);
-        }
-        y += ROW_H;
-
-        if (danger) drawCenteredDanger(g, mc, priorityTarget);
-        drawFireballCrosshairWarning(g, mc);
-        drawSafeRetreatVector(g, mc);
+        int y = drawHeader(g, mc, enemyViews, panelX, panelY + PAD);
 
         // Враги
         if (!enemyViews.isEmpty()) {
@@ -558,9 +639,7 @@ public final class BedWarsOverlay {
                 PlayerView row = enemyViews.get(i);
                 boolean emphasize = isProjectedPriorityThreat(row, priorityTarget);
                 int rowShift = emphasize ? THREAT_ROW_SHIFT_X : 0;
-                if (emphasize) {
-                    drawThreatRowCard(g, panelX, y);
-                }
+                if (emphasize) drawThreatRowCard(g, panelX, y);
                 playerRow(g, mc, row, panelX + PAD + rowShift, y, panelX + PANEL_W - PAD + rowShift);
                 y += ROW_H;
             }
@@ -578,11 +657,56 @@ public final class BedWarsOverlay {
 
         // Таблица командных сил
         if (showTable) {
-            drawTeamTable(g, mc, teamStats, panelX + PAD, y, PANEL_W - PAD * 2);
+            y = drawTeamTable(g, mc, teamStats, panelX + PAD, y, PANEL_W - PAD * 2);
         }
 
-        drawTacticalRadar(g, mc, self, enemies);
-        drawContextHelpers(g, mc);
+        // Лента событий матча
+        if (!matchLog.isEmpty()) {
+            drawMatchLog(g, mc, matchLog, panelX + PAD, y);
+        }
+
+        drawRadar(g, mc, mc.player);
+
+        // Центральные предупреждения — последними, поверх всего остального.
+        if (danger) drawCenteredDanger(g, mc, priorityTarget);
+        drawFireballCrosshairWarning(g, mc);
+        drawSafeRetreatVector(g, mc);
+    }
+
+    private static int drawHeader(GuiGraphics g, Minecraft mc, List<PlayerView> enemyViews, int panelX, int y) {
+        String title = "◉ BEDWARS";
+        int titleX = panelX + PAD;
+        txt(g, mc, title, titleX, y, 0xFFFFFFFF);
+
+        String freshness = scanState.active ? "SCAN" : "LIVE";
+        int freshnessColor = scanState.active ? 0xFF55FFFF : 0xFF55FF55;
+        int rightEdgeX = panelX + PANEL_W - PAD;
+        int gap = 4;
+        int charW = Math.max(1, mc.font.width("m"));
+        int freshnessX = titleX + mc.font.width(title) + 8;
+
+        String hint = enemyViews.isEmpty() ? "" : enemyViews.size() + " hostile";
+
+        // The right-hand hint may collide with the freshness label; shorten to keep one clean line.
+        if (!hint.isEmpty()) {
+            int hintX = rightEdgeX - mc.font.width(hint);
+            int availFreshW = (hintX - gap) - freshnessX;
+            if (availFreshW > 0 && mc.font.width(freshness) > availFreshW) {
+                freshness = cap(freshness, Math.max(3, availFreshW / charW));
+            }
+            int availHintW = rightEdgeX - (freshnessX + mc.font.width(freshness) + gap);
+            if (availHintW <= 0) {
+                hint = "";
+            } else if (mc.font.width(hint) > availHintW) {
+                hint = cap(hint, Math.max(3, availHintW / charW));
+            }
+        }
+
+        txt(g, mc, freshness, freshnessX, y, freshnessColor);
+        if (!hint.isEmpty()) {
+            txt(g, mc, hint, rightEdgeX - mc.font.width(hint), y, 0xFFFF5555);
+        }
+        return y + ROW_H;
     }
 
     // ── Строка игрока ────────────────────────────────────────────────────────
@@ -625,320 +749,7 @@ public final class BedWarsOverlay {
         txt(g, mc, distTxt, cursor, y, distCol);
     }
 
-    private static List<PlayerView> buildPlayerViews(Minecraft mc, LocalPlayer self, List<AbstractClientPlayer> players) {
-        List<PlayerView> rows = new ArrayList<>(players.size());
-        long now = System.currentTimeMillis();
-        for (AbstractClientPlayer p : players) {
-            double dist  = self.distanceTo(p);
-            float hp     = p.getHealth();
-            float maxHp  = Math.max(1f, p.getMaxHealth());
-            float hpPct  = hp / maxHp;
-            double dy    = p.getY() - self.getY();
-            double etaRaw = etaToContact(self, p, dist);
-            double eta   = smoothEta(p.getUUID(), etaRaw, now);
-            String dyStr = dy > 2.5 ? "+" + (int) dy : dy < -2.5 ? "" + (int) dy : "";
-            String etaTxt = (eta > 0 && eta < 20.0) ? " " + formatEta(eta) : "";
-            rows.add(new PlayerView(
-                cap(p.getName().getString(), 6),
-                nameColor(mc, p),
-                dir(self, p),
-                moveDir(p),
-                Math.round(hp),
-                hpPct,
-                (int) dist + "m" + dyStr + etaTxt,
-                (int) dist,
-                armorChar(p),
-                isAiming(p),
-                eta,
-                threatScore(self, p, dist, hpPct)
-            ));
-        }
-        purgeOldEta(now);
-        return rows;
-    }
-
-    private static double smoothEta(UUID playerId, double etaRaw, long nowMs) {
-        if (!Double.isFinite(etaRaw) || etaRaw <= 0.0) {
-            etaSeenAtMs.put(playerId, nowMs);
-            return etaRaw;
-        }
-        // Clamp extreme values to keep UI readable and stable.
-        etaRaw = Math.min(20.0, etaRaw);
-        Double prev = etaSmoothedByPlayer.get(playerId);
-        double smoothed;
-        if (prev == null) {
-            smoothed = etaRaw;
-        } else {
-            double delta = etaRaw - prev;
-            // Anti-jitter: clamp abrupt per-tick jump.
-            if (delta > ETA_MAX_STEP_PER_TICK) delta = ETA_MAX_STEP_PER_TICK;
-            if (delta < -ETA_MAX_STEP_PER_TICK) delta = -ETA_MAX_STEP_PER_TICK;
-            // Faster adaptation when target starts closing; avoids stale overestimated ETA.
-            double alpha = delta < 0 ? Math.min(0.45, ETA_SMOOTH_ALPHA * 1.9) : ETA_SMOOTH_ALPHA;
-            smoothed = prev + delta * alpha;
-        }
-        etaSmoothedByPlayer.put(playerId, smoothed);
-        etaSeenAtMs.put(playerId, nowMs);
-        return smoothed;
-    }
-
-    private static String formatEta(double etaSec) {
-        // Quantize to 0.2s to eliminate fast micro-flicker in text.
-        double q = Math.round(etaSec * 5.0) / 5.0;
-        return String.format(Locale.ROOT, "%.1fs", q);
-    }
-
-    private static void purgeOldEta(long nowMs) {
-        long ttlMs = 10_000L;
-        Iterator<Map.Entry<UUID, Long>> it = etaSeenAtMs.entrySet().iterator();
-        while (it.hasNext()) {
-            Map.Entry<UUID, Long> e = it.next();
-            if (nowMs - e.getValue() > ttlMs) {
-                etaSmoothedByPlayer.remove(e.getKey());
-                it.remove();
-            }
-        }
-    }
-
-    private static boolean cacheFresh(long ts) {
-        return ts > 0L && (System.currentTimeMillis() - ts) <= HUD_CACHE_TTL_MS;
-    }
-
-    private static void drawCenteredDanger(GuiGraphics g, Minecraft mc, PlayerView closest) {
-        String aim = closest.aiming() ? " BOW" : "";
-        String eta = (closest.etaSec() > 0 && closest.etaSec() < 20.0)
-            ? " ETA " + String.format(Locale.ROOT, "%.1fs", closest.etaSec()) : "";
-        String msg = closest.arrow() + " " + cap(closest.name(), 12) + " " + closest.distM() + "m" + aim + eta;
-
-        int sw = mc.getWindow().getGuiScaledWidth();
-        int sh = mc.getWindow().getGuiScaledHeight();
-        int x = (sw - mc.font.width(msg)) / 2;
-        int y = sh / 2 - 34;
-
-        long t0 = System.currentTimeMillis();
-        int bg = ((t0 / 350) % 2 == 0) ? 0xAA7A0000 : 0xAA5A0000;
-        int fc = ((t0 / 350) % 2 == 0) ? 0xFFFFFF55 : 0xFFFFFFFF;
-
-        g.fill(x - 4, y - 2, x + mc.font.width(msg) + 4, y + 10, bg);
-        txt(g, mc, msg, x, y, fc);
-    }
-
-    private static void drawTacticalRadar(GuiGraphics g, Minecraft mc, LocalPlayer self, List<AbstractClientPlayer> enemies) {
-        int sw = mc.getWindow().getGuiScaledWidth();
-        int x = sw - RADAR_SIZE - 8;
-        int y = 8;
-        int size = RADAR_SIZE;
-        int cx = x + size / 2;
-        int cy = y + size / 2;
-        int r = size / 2 - 6;
-
-        g.fill(x - 1, y - 1, x + size + 1, y + size + 1, 0x33000000);
-        g.fill(x, y, x + size, y + size, 0x22000000);
-        drawRadarRangeRings(g, mc, cx, cy, r);
-        g.fill(cx - 1, y + 4, cx + 1, y + size - 4, 0x33FFFFFF);
-        g.fill(x + 4, cy - 1, x + size - 4, cy + 1, 0x33FFFFFF);
-
-        int builtMarks = drawRadarConstructions(g, mc, self, cx, cy, r);
-        int enemyMarks = drawRadarEnemies(g, self, enemies, cx, cy, r);
-
-        // Player marker in center.
-        g.fill(cx - 2, cy - 2, cx + 2, cy + 2, 0xFF55FFFF);
-        txt(g, mc, "RADAR", x + 5, y + 4, 0xFFFFFFFF);
-        txt(g, mc, enemyMarks + "E", x + 6, y + size - 11, 0xFFFF6666);
-        txt(g, mc, builtMarks + "B", x + size - 24, y + size - 11, 0xFFBBBBBB);
-    }
-
-    private static void drawRadarRangeRings(GuiGraphics g, Minecraft mc, int cx, int cy, int radius) {
-        for (int mark : RADAR_RANGE_MARKS) {
-            int rr = (int) Math.round(mark * (double) radius / radarRangeBlocks);
-            if (rr <= 1) continue;
-            int color = mark == 30 ? 0x66B8DCFF : 0x447AA5D6;
-            drawRadarRing(g, cx, cy, rr, color);
-        }
-    }
-
-    private static void drawRadarRing(GuiGraphics g, int cx, int cy, int rr, int color) {
-        // Midpoint circle for a cleaner, continuous ring.
-        int x = rr;
-        int y = 0;
-        int d = 1 - rr;
-        while (x >= y) {
-            plotRadarCircle8(g, cx, cy, x, y, color);
-            y++;
-            if (d < 0) {
-                d += 2 * y + 1;
-            } else {
-                x--;
-                d += 2 * (y - x) + 1;
-            }
-        }
-    }
-
-    private static void plotRadarCircle8(GuiGraphics g, int cx, int cy, int x, int y, int color) {
-        drawRadarPixel(g, cx + x, cy + y, color);
-        drawRadarPixel(g, cx + y, cy + x, color);
-        drawRadarPixel(g, cx - y, cy + x, color);
-        drawRadarPixel(g, cx - x, cy + y, color);
-        drawRadarPixel(g, cx - x, cy - y, color);
-        drawRadarPixel(g, cx - y, cy - x, color);
-        drawRadarPixel(g, cx + y, cy - x, color);
-        drawRadarPixel(g, cx + x, cy - y, color);
-    }
-
-    private static void drawRadarPixel(GuiGraphics g, int x, int y, int color) {
-        g.fill(x, y, x + 1, y + 1, color);
-    }
-
-    private static int drawRadarConstructions(GuiGraphics g, Minecraft mc, LocalPlayer self, int cx, int cy, int radius) {
-        if (mc.level == null) return 0;
-        ensureRadarConstructionsCache(mc, self);
-        int marks = 0;
-        for (RadarConstructionSample sample : cachedRadarConstructions) {
-                int[] radar = toRadarCoords(self, sample.dx(), sample.dz(), radius);
-                int rx = radar[0];
-                int ry = radar[1];
-                g.fill(cx + rx, cy + ry, cx + rx + 1, cy + ry + 1, sample.color());
-                marks++;
-        }
-        return marks;
-    }
-
-    private static void ensureRadarConstructionsCache(Minecraft mc, LocalPlayer self) {
-        long now = System.currentTimeMillis();
-        BlockPos center = self.blockPosition();
-        boolean rangeChanged = radarCacheRangeBlocks != radarRangeBlocks;
-        boolean moved =
-            Math.abs(center.getX() - radarCacheCenterX) >= RADAR_CACHE_MOVE_THRESHOLD
-                || Math.abs(center.getZ() - radarCacheCenterZ) >= RADAR_CACHE_MOVE_THRESHOLD
-                || Math.abs(center.getY() - radarCacheCenterY) >= 2;
-        boolean stale = now - cachedRadarConstructionsAtMs >= RADAR_CONSTRUCTIONS_CACHE_MS;
-        if (!rangeChanged && !moved && !stale && !cachedRadarConstructions.isEmpty()) {
-            return;
-        }
-        rebuildRadarConstructionsCache(mc, center);
-        cachedRadarConstructionsAtMs = now;
-        radarCacheCenterX = center.getX();
-        radarCacheCenterY = center.getY();
-        radarCacheCenterZ = center.getZ();
-        radarCacheRangeBlocks = radarRangeBlocks;
-    }
-
-    private static void rebuildRadarConstructionsCache(Minecraft mc, BlockPos center) {
-        List<RadarConstructionSample> next = new ArrayList<>(RADAR_MAX_CONSTRUCTION_MARKS);
-        BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
-        BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
-        int y0 = center.getY();
-        int step = Math.max(3, radarRangeBlocks / 16);
-
-        for (int dx = -radarRangeBlocks; dx <= radarRangeBlocks; dx += step) {
-            for (int dz = -radarRangeBlocks; dz <= radarRangeBlocks; dz += step) {
-                double distSq = dx * dx + dz * dz;
-                if (distSq > radarRangeBlocks * radarRangeBlocks) continue;
-                int x = center.getX() + dx;
-                int z = center.getZ() + dz;
-                int bestY = Integer.MIN_VALUE;
-                int bestDy = Integer.MAX_VALUE;
-                for (int dy = -RADAR_Y_RANGE; dy <= RADAR_Y_RANGE; dy++) {
-                    p.set(x, y0 + dy, z);
-                    if (!mc.level.isLoaded(p)) continue;
-                    BlockState bs = mc.level.getBlockState(p);
-                    if (bs.isAir() || bs.getBlock() instanceof BedBlock) continue;
-                    int absDy = Math.abs(dy);
-                    if (absDy < bestDy) {
-                        bestDy = absDy;
-                        bestY = y0 + dy;
-                    }
-                }
-                if (bestY == Integer.MIN_VALUE) continue;
-                int color = radarConstructionColor(mc, x, bestY, z, probe);
-                next.add(new RadarConstructionSample(dx, dz, color));
-                if (next.size() >= RADAR_MAX_CONSTRUCTION_MARKS) {
-                    cachedRadarConstructions = next;
-                    return;
-                }
-            }
-        }
-        cachedRadarConstructions = next;
-    }
-
-    private static int radarConstructionColor(Minecraft mc, int x, int y, int z, BlockPos.MutableBlockPos probe) {
-        boolean hasAbove = isSolidAt(mc, x, y + 1, z, probe);
-        boolean hasAbove2 = isSolidAt(mc, x, y + 2, z, probe);
-        boolean airBelow = !isSolidAt(mc, x, y - 1, z, probe);
-
-        int sideSolid = 0;
-        if (isSolidAt(mc, x + 1, y, z, probe)) sideSolid++;
-        if (isSolidAt(mc, x - 1, y, z, probe)) sideSolid++;
-        if (isSolidAt(mc, x, y, z + 1, probe)) sideSolid++;
-        if (isSolidAt(mc, x, y, z - 1, probe)) sideSolid++;
-
-        // High constructions (towers/stacks): 3+ vertical blocks.
-        if (hasAbove && hasAbove2) return 0xCC66E6FF;
-        // Walls/fortifications: dense side neighbors or 2-block height.
-        if (hasAbove || sideSolid >= 3) return 0xCCFFB366;
-        // Bridges / thin paths: exposed bottom or sparse neighbors.
-        if (airBelow || sideSolid <= 1) return 0xCCCECECE;
-        return 0xCC97D897;
-    }
-
-    private static boolean isSolidAt(Minecraft mc, int x, int y, int z, BlockPos.MutableBlockPos probe) {
-        probe.set(x, y, z);
-        if (!mc.level.isLoaded(probe)) return false;
-        return !mc.level.getBlockState(probe).isAir();
-    }
-
-    private static int drawRadarEnemies(GuiGraphics g, LocalPlayer self, List<AbstractClientPlayer> enemies, int cx, int cy, int radius) {
-        int marks = 0;
-        for (AbstractClientPlayer enemy : enemies) {
-            double dx = enemy.getX() - self.getX();
-            double dz = enemy.getZ() - self.getZ();
-            double dist = Math.sqrt(dx * dx + dz * dz);
-            if (dist > radarRangeBlocks || dist < 0.01) continue;
-
-            int[] radar = toRadarCoords(self, dx, dz, radius);
-            int rx = radar[0];
-            int ry = radar[1];
-            int px = cx + rx;
-            int py = cy + ry;
-
-            int col = isAiming(enemy) ? 0xFFFFAA00 : 0xFFFF5555;
-            g.fill(px - 1, py - 1, px + 2, py + 2, col);
-
-            // Movement vector arrow.
-            double vx = enemy.getX() - enemy.xo;
-            double vz = enemy.getZ() - enemy.zo;
-            double vm = Math.sqrt(vx * vx + vz * vz);
-            if (vm > 0.002) {
-                int mx = (int) Math.round(vx / vm * 4.0);
-                int my = (int) Math.round(vz / vm * 4.0);
-                g.fill(px + mx - 1, py + my - 1, px + mx + 1, py + my + 1, 0xFFFFCC88);
-            }
-            marks++;
-        }
-        return marks;
-    }
-
-    private static int[] toRadarCoords(LocalPlayer self, double dx, double dz, int radius) {
-        // Rotate world offsets into player-local radar space:
-        // +X on radar = player's right, -Y on radar = player's forward.
-        Vec3 look = self.getLookAngle();
-        Vec3 forward = new Vec3(look.x, 0.0, look.z);
-        if (forward.lengthSqr() < 1.0e-6) {
-            forward = new Vec3(0.0, 0.0, 1.0);
-        } else {
-            forward = forward.normalize();
-        }
-        Vec3 right = new Vec3(-forward.z, 0.0, forward.x);
-
-        double side = dx * right.x + dz * right.z;
-        double front = dx * forward.x + dz * forward.z;
-        int rx = (int) Math.round(side * radius / radarRangeBlocks);
-        int ry = (int) Math.round(-front * radius / radarRangeBlocks);
-        return new int[] {rx, ry};
-    }
-
     private static PlayerView pickPriorityTarget(List<PlayerView> enemies) {
-        if (enemies.isEmpty()) return null;
         PlayerView best = null;
         for (PlayerView pv : enemies) {
             if (best == null || pv.threatScore() > best.threatScore()) best = pv;
@@ -963,83 +774,416 @@ public final class BedWarsOverlay {
         g.fill(left + 1, top + 1, right, bottom - 1, 0x33220000);
     }
 
+    private static void drawCenteredDanger(GuiGraphics g, Minecraft mc, PlayerView closest) {
+        String aim = closest.aiming() ? " BOW" : "";
+        String eta = (closest.etaSec() > 0 && closest.etaSec() < 20.0)
+            ? " ETA " + String.format(Locale.ROOT, "%.1fs", closest.etaSec()) : "";
+        String msg = closest.arrow() + " " + cap(closest.name(), 12) + " " + closest.distM() + "m" + aim + eta;
+
+        int sw = mc.getWindow().getGuiScaledWidth();
+        int sh = mc.getWindow().getGuiScaledHeight();
+        int x = (sw - mc.font.width(msg)) / 2;
+        int y = sh / 2 - 34;
+
+        long t0 = System.currentTimeMillis();
+        int bg = ((t0 / 350) % 2 == 0) ? 0xAA7A0000 : 0xAA5A0000;
+        int fc = ((t0 / 350) % 2 == 0) ? 0xFFFFFF55 : 0xFFFFFFFF;
+
+        g.fill(x - 4, y - 2, x + mc.font.width(msg) + 4, y + 10, bg);
+        txt(g, mc, msg, x, y, fc);
+    }
+
+    // ── Радар ────────────────────────────────────────────────────────────────
+
+    /**
+     * Circular compass radar in the top-right corner.
+     *
+     * <p>The disc rotates with the player's view, so "up" is always forward — that is what makes
+     * a radar readable mid-fight. Compass letters ride the rim so absolute direction stays
+     * available, and enemies beyond the current range are pinned to the rim rather than hidden:
+     * knowing someone is closing from the north matters before they are in range.</p>
+     */
+    private static void drawRadar(GuiGraphics g, Minecraft mc, LocalPlayer self) {
+        int sw = mc.getWindow().getGuiScaledWidth();
+        int r = RADAR_SIZE / 2;
+        int cx = sw - RADAR_MARGIN - r;
+        int cy = RADAR_MARGIN + r;
+        int plotR = r - RADAR_RIM_PAD;
+
+        drawDisc(g, cx, cy, r, RADAR_BG);
+        drawDisc(g, cx, cy, plotR + 2, RADAR_BG_INNER);
+
+        // Rings are derived from the current zoom, so they stay meaningful at any range.
+        drawRing(g, cx, cy, plotR / 3, RADAR_RING);
+        drawRing(g, cx, cy, plotR * 2 / 3, RADAR_RING);
+        drawRing(g, cx, cy, plotR, RADAR_RIM);
+
+        double[] basis = viewBasis(self);
+        drawRadarConstructions(g, mc, self, basis, cx, cy, plotR);
+        drawCompass(g, mc, basis, cx, cy, r - 6);
+        int enemyMarks = drawRadarEnemies(g, self, basis, cx, cy, plotR);
+        drawSelfMarker(g, cx, cy);
+
+        String label = enemyMarks + "E · " + radarRangeBlocks + "m";
+        txt(g, mc, label, cx - mc.font.width(label) / 2, cy + r + 3, 0xFFB9C7D2);
+    }
+
+    /** Filled circle, drawn as horizontal spans so it stays crisp at any GUI scale. */
+    private static void drawDisc(GuiGraphics g, int cx, int cy, int r, int color) {
+        if (r <= 0) return;
+        for (int dy = -r; dy <= r; dy++) {
+            int half = (int) Math.sqrt((double) r * r - (double) dy * dy);
+            if (half <= 0) continue;
+            g.fill(cx - half, cy + dy, cx + half + 1, cy + dy + 1, color);
+        }
+    }
+
+    /** Midpoint circle — a continuous single-pixel ring. */
+    private static void drawRing(GuiGraphics g, int cx, int cy, int rr, int color) {
+        if (rr <= 1) return;
+        int x = rr;
+        int y = 0;
+        int d = 1 - rr;
+        while (x >= y) {
+            plotCircle8(g, cx, cy, x, y, color);
+            y++;
+            if (d < 0) {
+                d += 2 * y + 1;
+            } else {
+                x--;
+                d += 2 * (y - x) + 1;
+            }
+        }
+    }
+
+    private static void plotCircle8(GuiGraphics g, int cx, int cy, int x, int y, int color) {
+        pixel(g, cx + x, cy + y, color);
+        pixel(g, cx + y, cy + x, color);
+        pixel(g, cx - y, cy + x, color);
+        pixel(g, cx - x, cy + y, color);
+        pixel(g, cx - x, cy - y, color);
+        pixel(g, cx - y, cy - x, color);
+        pixel(g, cx + y, cy - x, color);
+        pixel(g, cx + x, cy - y, color);
+    }
+
+    private static void pixel(GuiGraphics g, int x, int y, int color) {
+        g.fill(x, y, x + 1, y + 1, color);
+    }
+
+    private static void drawSelfMarker(GuiGraphics g, int cx, int cy) {
+        g.fill(cx - 1, cy - 3, cx + 2, cy + 4, RADAR_SELF);
+        g.fill(cx - 3, cy - 1, cx + 4, cy + 2, RADAR_SELF);
+        g.fill(cx, cy, cx + 1, cy + 1, 0xFF0C0F14);
+    }
+
+    private static void drawCompass(GuiGraphics g, Minecraft mc, double[] basis, int cx, int cy, int radius) {
+        // North is -Z in world space.
+        drawCompassLetter(g, mc, basis, cx, cy, radius, 0.0, -1.0, "N", RADAR_COMPASS_N);
+        drawCompassLetter(g, mc, basis, cx, cy, radius, 1.0, 0.0, "E", RADAR_COMPASS);
+        drawCompassLetter(g, mc, basis, cx, cy, radius, 0.0, 1.0, "S", RADAR_COMPASS);
+        drawCompassLetter(g, mc, basis, cx, cy, radius, -1.0, 0.0, "W", RADAR_COMPASS);
+    }
+
+    private static void drawCompassLetter(GuiGraphics g, Minecraft mc, double[] basis,
+                                          int cx, int cy, int radius,
+                                          double worldDx, double worldDz, String letter, int color) {
+        int px = cx + (int) Math.round(localSide(basis, worldDx, worldDz) * radius);
+        int py = cy - (int) Math.round(localFront(basis, worldDx, worldDz) * radius);
+        txt(g, mc, letter, px - mc.font.width(letter) / 2, py - 4, color);
+    }
+
+    /**
+     * View basis for radar rotation, as {@code [forwardX, forwardZ]}. The right vector is
+     * {@code (-forwardZ, forwardX)}, so one pair of numbers describes the whole rotation.
+     *
+     * <p>Computed once per radar frame: a per-marker version allocated three {@link Vec3} for
+     * each of up to 220 geometry dots plus every enemy.</p>
+     */
+    private static double[] viewBasis(LocalPlayer self) {
+        Vec3 look = self.getLookAngle();
+        double len = Math.hypot(look.x, look.z);
+        if (len < 1.0e-6) return new double[] { 0.0, 1.0 };
+        return new double[] { look.x / len, look.z / len };
+    }
+
+    /** Side (right-positive) component of a world XZ offset in view-local axes. */
+    private static double localSide(double[] basis, double dx, double dz) {
+        return dx * -basis[1] + dz * basis[0];
+    }
+
+    /** Front (forward-positive) component of a world XZ offset in view-local axes. */
+    private static double localFront(double[] basis, double dx, double dz) {
+        return dx * basis[0] + dz * basis[1];
+    }
+
+    private static int drawRadarEnemies(GuiGraphics g, LocalPlayer self, double[] basis,
+                                        int cx, int cy, int plotR) {
+        double scale = plotR / (double) radarRangeBlocks;
+        int inRange = 0;
+
+        for (AbstractClientPlayer enemy : cachedRadarEnemies) {
+            if (!enemy.isAlive() || enemy.isSpectator()) continue;
+
+            double dx = enemy.getX() - self.getX();
+            double dz = enemy.getZ() - self.getZ();
+            double dist = Math.sqrt(dx * dx + dz * dz);
+            if (dist < 0.01) continue;
+
+            double side = localSide(basis, dx, dz);
+            double front = localFront(basis, dx, dz);
+            double len = Math.hypot(side, front);
+            if (len < 1.0e-6) continue;
+
+            boolean outside = dist > radarRangeBlocks;
+            // Out-of-range contacts are pinned to the rim instead of vanishing.
+            double drawDist = outside ? plotR - 2 : Math.min(plotR - 3, dist * scale);
+            double px = cx + side / len * drawDist;
+            double py = cy - front / len * drawDist;
+
+            int color = outside ? RADAR_ENEMY_FAR : (isAiming(enemy) ? RADAR_ENEMY_AIM : RADAR_ENEMY);
+            if (!outside) inRange++;
+
+            double vx = enemy.getX() - enemy.xo;
+            double vz = enemy.getZ() - enemy.zo;
+            double vSide = localSide(basis, vx, vz);
+            double vFront = localFront(basis, vx, vz);
+            double vLen = Math.hypot(vSide, vFront);
+            if (!outside && vLen > 0.012) {
+                drawEnemyArrow(g, px, py, vSide / vLen, -vFront / vLen, color);
+            } else {
+                drawEnemyDot(g, px, py, color);
+            }
+        }
+        return inRange;
+    }
+
+    /** Movement-oriented arrowhead: heading is readable without a second marker next to the dot. */
+    private static void drawEnemyArrow(GuiGraphics g, double x, double y, double ux, double uy, int color) {
+        double tipLen = 4.2;
+        double backLen = 2.6;
+        double halfWidth = 2.6;
+        // Perpendicular to the heading.
+        double nx = -uy;
+        double ny = ux;
+
+        fillTriangle(g,
+            x + ux * tipLen,                   y + uy * tipLen,
+            x - ux * backLen + nx * halfWidth, y - uy * backLen + ny * halfWidth,
+            x - ux * backLen - nx * halfWidth, y - uy * backLen - ny * halfWidth,
+            color);
+    }
+
+    private static void drawEnemyDot(GuiGraphics g, double x, double y, int color) {
+        int px = (int) Math.round(x);
+        int py = (int) Math.round(y);
+        g.fill(px - 1, py - 2, px + 2, py + 3, color);
+        g.fill(px - 2, py - 1, px + 3, py + 2, color);
+    }
+
+    /** Scanline triangle fill; {@link GuiGraphics} only exposes axis-aligned rectangles. */
+    private static void fillTriangle(GuiGraphics g,
+                                     double x0, double y0, double x1, double y1, double x2, double y2,
+                                     int color) {
+        int minY = (int) Math.floor(Math.min(y0, Math.min(y1, y2)));
+        int maxY = (int) Math.ceil(Math.max(y0, Math.max(y1, y2)));
+        double[][] edges = { { x0, y0, x1, y1 }, { x1, y1, x2, y2 }, { x2, y2, x0, y0 } };
+
+        for (int py = minY; py <= maxY; py++) {
+            double rowY = py + 0.5;
+            double lo = Double.POSITIVE_INFINITY;
+            double hi = Double.NEGATIVE_INFINITY;
+
+            for (double[] e : edges) {
+                double ay = e[1];
+                double by = e[3];
+                if (rowY < Math.min(ay, by) || rowY >= Math.max(ay, by)) continue;
+                double xAt = e[0] + (e[2] - e[0]) * ((rowY - ay) / (by - ay));
+                lo = Math.min(lo, xAt);
+                hi = Math.max(hi, xAt);
+            }
+            if (lo > hi) continue;
+
+            int xStart = (int) Math.floor(lo);
+            int xEnd = (int) Math.ceil(hi);
+            if (xEnd > xStart) g.fill(xStart, py, xEnd, py + 1, color);
+        }
+    }
+
+    private static void drawRadarConstructions(GuiGraphics g, Minecraft mc, LocalPlayer self,
+                                               double[] basis, int cx, int cy, int plotR) {
+        if (mc.level == null) return;
+        ensureRadarConstructionsCache(mc, self);
+
+        double scale = plotR / (double) radarRangeBlocks;
+        int limitSq = (plotR - 1) * (plotR - 1);
+
+        for (RadarConstructionSample sample : cachedRadarConstructions) {
+            int rx = (int) Math.round(localSide(basis, sample.dx(), sample.dz()) * scale);
+            int ry = (int) Math.round(-localFront(basis, sample.dx(), sample.dz()) * scale);
+            // Hard clip: nothing may spill outside the disc.
+            if (rx * rx + ry * ry > limitSq) continue;
+            pixel(g, cx + rx, cy + ry, sample.color());
+        }
+    }
+
+    private static void ensureRadarConstructionsCache(Minecraft mc, LocalPlayer self) {
+        long now = System.currentTimeMillis();
+        BlockPos center = self.blockPosition();
+        boolean rangeChanged = radarCacheRangeBlocks != radarRangeBlocks;
+        boolean moved =
+            Math.abs(center.getX() - radarCacheCenterX) >= RADAR_CACHE_MOVE_THRESHOLD
+                || Math.abs(center.getZ() - radarCacheCenterZ) >= RADAR_CACHE_MOVE_THRESHOLD
+                || Math.abs(center.getY() - radarCacheCenterY) >= 2;
+        boolean stale = now - cachedRadarConstructionsAtMs >= RADAR_CONSTRUCTIONS_CACHE_MS;
+        if (!rangeChanged && !moved && !stale && !cachedRadarConstructions.isEmpty()) return;
+
+        rebuildRadarConstructionsCache(mc, center);
+        cachedRadarConstructionsAtMs = now;
+        radarCacheCenterX = center.getX();
+        radarCacheCenterY = center.getY();
+        radarCacheCenterZ = center.getZ();
+        radarCacheRangeBlocks = radarRangeBlocks;
+    }
+
+    private static void rebuildRadarConstructionsCache(Minecraft mc, BlockPos center) {
+        List<RadarConstructionSample> next = new ArrayList<>(RADAR_MAX_CONSTRUCTION_MARKS);
+        BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+        BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
+        int y0 = center.getY();
+        int step = Math.max(3, radarRangeBlocks / 16);
+
+        for (int dx = -radarRangeBlocks; dx <= radarRangeBlocks; dx += step) {
+            for (int dz = -radarRangeBlocks; dz <= radarRangeBlocks; dz += step) {
+                if (dx * dx + dz * dz > radarRangeBlocks * radarRangeBlocks) continue;
+                int x = center.getX() + dx;
+                int z = center.getZ() + dz;
+
+                int bestY = Integer.MIN_VALUE;
+                int bestDy = Integer.MAX_VALUE;
+                for (int dy = -RADAR_Y_RANGE; dy <= RADAR_Y_RANGE; dy++) {
+                    p.set(x, y0 + dy, z);
+                    if (!mc.level.isLoaded(p)) continue;
+                    BlockState bs = mc.level.getBlockState(p);
+                    if (bs.isAir() || bs.getBlock() instanceof BedBlock) continue;
+                    int absDy = Math.abs(dy);
+                    if (absDy < bestDy) {
+                        bestDy = absDy;
+                        bestY = y0 + dy;
+                    }
+                }
+                if (bestY == Integer.MIN_VALUE) continue;
+
+                next.add(new RadarConstructionSample(dx, dz, radarConstructionColor(mc, x, bestY, z, probe)));
+                if (next.size() >= RADAR_MAX_CONSTRUCTION_MARKS) {
+                    cachedRadarConstructions = next;
+                    return;
+                }
+            }
+        }
+        cachedRadarConstructions = next;
+    }
+
+    /**
+     * Categorises terrain so the radar reads as a map rather than noise. Alphas stay low on
+     * purpose: geometry is context, enemies are the subject.
+     */
+    private static int radarConstructionColor(Minecraft mc, int x, int y, int z, BlockPos.MutableBlockPos probe) {
+        boolean hasAbove = isSolidAt(mc, x, y + 1, z, probe);
+        boolean hasAbove2 = isSolidAt(mc, x, y + 2, z, probe);
+        boolean airBelow = !isSolidAt(mc, x, y - 1, z, probe);
+
+        int sideSolid = 0;
+        if (isSolidAt(mc, x + 1, y, z, probe)) sideSolid++;
+        if (isSolidAt(mc, x - 1, y, z, probe)) sideSolid++;
+        if (isSolidAt(mc, x, y, z + 1, probe)) sideSolid++;
+        if (isSolidAt(mc, x, y, z - 1, probe)) sideSolid++;
+
+        // High constructions (towers/stacks): 3+ vertical blocks.
+        if (hasAbove && hasAbove2) return 0x9959C8E0;
+        // Walls/fortifications: dense side neighbors or 2-block height.
+        if (hasAbove || sideSolid >= 3) return 0x99E09A55;
+        // Bridges / thin paths: exposed bottom or sparse neighbors.
+        if (airBelow || sideSolid <= 1) return 0x8CBFBFBF;
+        return 0x7A85B885;
+    }
+
+    private static boolean isSolidAt(Minecraft mc, int x, int y, int z, BlockPos.MutableBlockPos probe) {
+        probe.set(x, y, z);
+        if (!mc.level.isLoaded(probe)) return false;
+        return !mc.level.getBlockState(probe).isAir();
+    }
+
+    // ── Контекстные помощники ────────────────────────────────────────────────
+
     private static void refreshContextHelpers(Minecraft mc, LocalPlayer self, long nowMs) {
         if (ScopeConfig.FIREBALL_THREAT_ENABLED.get()) {
             evaluateFireballThreat(mc, self);
-            if (fireballAlertDanger) {
-                playWarningSound(mc, true, nowMs);
-            }
+            if (fireballAlertDanger) playWarningSound(mc, true, nowMs);
         } else {
-            fireballAlertText = "";
             fireballAlertDanger = false;
         }
+
         if (ScopeConfig.BRIDGE_HELPER_ENABLED.get()) {
             evaluateBridgeHelper(mc, self);
-            if (bridgeAlertDanger) {
-                playWarningSound(mc, false, nowMs);
-            }
+            if (bridgeAlertDanger) playWarningSound(mc, false, nowMs);
         } else {
-            bridgeAlertText = "";
             bridgeAlertDanger = false;
         }
+
         evaluateSafeRetreat(mc, self);
     }
 
     private static void evaluateFireballThreat(Minecraft mc, LocalPlayer self) {
         fireballAlertDanger = false;
-        fireballAlertText = "FIREBALL: clear";
-        fireballAlertColor = 0xFF66CC66;
         AABB box = self.getBoundingBox().inflate(36.0, 18.0, 36.0);
-        Entity best = null;
         double bestEta = Double.POSITIVE_INFINITY;
         double bestDist = Double.POSITIVE_INFINITY;
+
         for (Entity e : mc.level.getEntities(self, box)) {
             Identifier entityId = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType());
-            String path = entityId == null ? "" : entityId.getPath();
-            if (!path.contains("fireball")) continue;
+            if (entityId == null || !entityId.getPath().contains("fireball")) continue;
+
             Vec3 toPlayer = self.position().subtract(e.position());
             double dist = toPlayer.length();
             if (dist < 0.001) continue;
-            Vec3 vel = e.getDeltaMovement();
-            double closingPerTick = toPlayer.normalize().dot(vel);
+
+            double closingPerTick = toPlayer.normalize().dot(e.getDeltaMovement());
             if (closingPerTick <= 0.015) continue;
+
             double etaSec = (dist / closingPerTick) / 20.0;
             if (etaSec < bestEta) {
                 bestEta = etaSec;
                 bestDist = dist;
-                best = e;
             }
         }
-        if (best != null) {
+        if (Double.isFinite(bestEta)) {
             fireballAlertDanger = bestEta <= 2.4 || bestDist <= 18.0;
-            String dir = directionArrowFromVector(self, best.position().subtract(self.position()));
-            fireballAlertText = String.format(Locale.ROOT, "FIREBALL %s %.0fm %.1fs", dir, bestDist, bestEta);
-            fireballAlertColor = fireballAlertDanger ? 0xFFFF5555 : 0xFFFFAA55;
         }
     }
 
     private static void evaluateBridgeHelper(Minecraft mc, LocalPlayer self) {
         BlockPos base = self.blockPosition();
         boolean overVoid = isVoidColumn(mc, base, 14);
+
         int sideAir = 0;
         if (isAirAt(mc, base.getX() + 1, base.getY() - 1, base.getZ())) sideAir++;
         if (isAirAt(mc, base.getX() - 1, base.getY() - 1, base.getZ())) sideAir++;
         if (isAirAt(mc, base.getX(), base.getY() - 1, base.getZ() + 1)) sideAir++;
         if (isAirAt(mc, base.getX(), base.getY() - 1, base.getZ() - 1)) sideAir++;
         boolean edgeRisk = sideAir >= 2;
+
         double speed = self.getDeltaMovement().horizontalDistance();
         boolean moving = speed > 0.025;
         int predictSteps = speed > 0.11 ? 6 : speed > 0.06 ? 4 : 3;
+
         boolean predictedVoidDanger = false;
-        Vec3 move = self.getDeltaMovement();
         if (moving) {
-            double dirX = move.x;
-            double dirZ = move.z;
+            Vec3 move = self.getDeltaMovement();
             for (int i = 1; i <= predictSteps; i++) {
-                int px = Mth.floor(self.getX() + dirX * i * 2.3);
-                int pz = Mth.floor(self.getZ() + dirZ * i * 2.3);
-                BlockPos probe = new BlockPos(px, base.getY(), pz);
-                if (isVoidColumn(mc, probe, 12)) {
+                int px = Mth.floor(self.getX() + move.x * i * 2.3);
+                int pz = Mth.floor(self.getZ() + move.z * i * 2.3);
+                if (isVoidColumn(mc, new BlockPos(px, base.getY(), pz), 12)) {
                     predictedVoidDanger = true;
                     break;
                 }
@@ -1048,62 +1192,25 @@ public final class BedWarsOverlay {
 
         bridgeAlertDanger = moving && (overVoid || predictedVoidDanger)
             && (speed > 0.030 || self.fallDistance > 0.8f || edgeRisk || predictedVoidDanger);
-        if (bridgeAlertDanger) {
-            bridgeAlertText = predictedVoidDanger
-                ? String.format(Locale.ROOT, "BRIDGE RISK AHEAD %.0fm", Math.max(2.0, speed * 38.0))
-                : String.format(Locale.ROOT, "BRIDGE RISK speed %.2f", speed);
-            bridgeAlertColor = predictedVoidDanger ? 0xFFFF7744 : 0xFFFFAA33;
-        } else if (overVoid) {
-            bridgeAlertText = "BRIDGE: over void";
-            bridgeAlertColor = 0xFFFFFF55;
-        } else {
-            bridgeAlertText = "BRIDGE: stable";
-            bridgeAlertColor = 0xFF66CC66;
-        }
     }
 
     private static boolean isVoidColumn(Minecraft mc, BlockPos base, int depth) {
         for (int i = 1; i <= depth; i++) {
             BlockPos p = base.below(i);
-            if (mc.level.isLoaded(p) && !mc.level.getBlockState(p).isAir()) {
-                return false;
-            }
+            if (mc.level.isLoaded(p) && !mc.level.getBlockState(p).isAir()) return false;
         }
         return true;
     }
 
-    private static void drawContextHelpers(GuiGraphics g, Minecraft mc) {
-        List<String> lines = new ArrayList<>(3);
-        List<Integer> colors = new ArrayList<>(3);
-        if (ScopeConfig.FIREBALL_THREAT_ENABLED.get() && !fireballAlertText.isEmpty()) {
-            lines.add(fireballAlertText);
-            colors.add(fireballAlertColor);
-        }
-        if (ScopeConfig.BRIDGE_HELPER_ENABLED.get() && !bridgeAlertText.isEmpty()) {
-            lines.add(bridgeAlertText);
-            colors.add(bridgeAlertColor);
-        }
-        if (retreatAlertDanger && !retreatAlertText.isEmpty()) {
-            lines.add(retreatAlertText);
-            colors.add(retreatAlertColor);
-        }
-        if (lines.isEmpty()) return;
-
-        int maxW = 0;
-        for (String line : lines) maxW = Math.max(maxW, mc.font.width(line));
-        int x = mc.getWindow().getGuiScaledWidth() - maxW - 16;
-        int y = 8 + RADAR_SIZE + 6;
-        int h = lines.size() * 12 + 6;
-        g.fill(x - 4, y - 2, x + maxW + 6, y + h, 0x44000000);
-        for (int i = 0; i < lines.size(); i++) {
-            txt(g, mc, lines.get(i), x, y + i * 12, colors.get(i));
-        }
+    private static boolean isAirAt(Minecraft mc, int x, int y, int z) {
+        BlockPos pos = new BlockPos(x, y, z);
+        if (!mc.level.isLoaded(pos)) return true;
+        return mc.level.getBlockState(pos).isAir();
     }
 
     private static void drawFireballCrosshairWarning(GuiGraphics g, Minecraft mc) {
-        if (!ScopeConfig.FIREBALL_THREAT_ENABLED.get() || !fireballAlertDanger || fireballAlertText.isEmpty()) return;
-        long t = System.currentTimeMillis();
-        if (((t / 220L) % 2L) == 0L) return; // blink
+        if (!ScopeConfig.FIREBALL_THREAT_ENABLED.get() || !fireballAlertDanger) return;
+        if (((System.currentTimeMillis() / 220L) % 2L) == 0L) return; // blink
 
         int sw = mc.getWindow().getGuiScaledWidth();
         int sh = mc.getWindow().getGuiScaledHeight();
@@ -1122,54 +1229,40 @@ public final class BedWarsOverlay {
 
     private static void drawSafeRetreatVector(GuiGraphics g, Minecraft mc) {
         if (!retreatAlertDanger || retreatAlertText.isEmpty()) return;
+
         int sw = mc.getWindow().getGuiScaledWidth();
         int sh = mc.getWindow().getGuiScaledHeight();
         boolean scopeActive = ScopeOverlay.isScopeInputActive(mc);
         int y = sh / 2 + (scopeActive ? 70 : 46);
-        if (ScopeConfig.FIREBALL_THREAT_ENABLED.get() && fireballAlertDanger) {
-            y += 16;
-        }
+        if (ScopeConfig.FIREBALL_THREAT_ENABLED.get() && fireballAlertDanger) y += 16;
         y = Math.min(y, sh - 54);
 
-        long t = System.currentTimeMillis();
-        boolean pulse = ((t / 180L) % 2L) == 0L;
-        String label = retreatAlertText;
-        int w = mc.font.width(label);
+        boolean pulse = ((System.currentTimeMillis() / 180L) % 2L) == 0L;
+        int w = mc.font.width(retreatAlertText);
         int x = (sw - w) / 2;
-        int bg = pulse ? 0xAA2F0000 : 0xAA4A0000;
-        int fg = pulse ? 0xFFFF8855 : retreatAlertColor;
 
-        g.fill(x - 12, y - 4, x + w + 12, y + 11, bg);
+        g.fill(x - 12, y - 4, x + w + 12, y + 11, pulse ? 0xAA2F0000 : 0xAA4A0000);
         g.fill(x - 10, y - 2, x + w + 10, y + 10, 0x66200000);
-        txt(g, mc, label, x, y, fg);
+        txt(g, mc, retreatAlertText, x, y, pulse ? 0xFFFF8855 : retreatAlertColor);
     }
 
     private static void playWarningSound(Minecraft mc, boolean fireball, long nowMs) {
         if (mc.player == null) return;
         if (!ScopeConfig.WARNING_SOUND_ENABLED.get()) return;
+
         if (fireball) {
             if (!ScopeConfig.FIREBALL_WARNING_SOUND.get()) return;
             if (nowMs - lastFireballWarnAtMs < FIREBALL_SOUND_COOLDOWN_MS) return;
             lastFireballWarnAtMs = nowMs;
             float vol = ScopeConfig.FIREBALL_WARNING_VOLUME.get() / 100.0f;
-            if (vol > 0f) {
-                mc.player.playSound(SoundEvents.NOTE_BLOCK_BELL.value(), vol, 1.35f);
-            }
+            if (vol > 0f) mc.player.playSound(SoundEvents.NOTE_BLOCK_BELL.value(), vol, 1.35f);
         } else {
             if (!ScopeConfig.VOID_WARNING_SOUND.get()) return;
             if (nowMs - lastVoidWarnAtMs < VOID_SOUND_COOLDOWN_MS) return;
             lastVoidWarnAtMs = nowMs;
             float vol = ScopeConfig.VOID_WARNING_VOLUME.get() / 100.0f;
-            if (vol > 0f) {
-                mc.player.playSound(SoundEvents.NOTE_BLOCK_BASEDRUM.value(), vol, 1.0f);
-            }
+            if (vol > 0f) mc.player.playSound(SoundEvents.NOTE_BLOCK_BASEDRUM.value(), vol, 1.0f);
         }
-    }
-
-    private static boolean isAirAt(Minecraft mc, int x, int y, int z) {
-        BlockPos pos = new BlockPos(x, y, z);
-        if (!mc.level.isLoaded(pos)) return true;
-        return mc.level.getBlockState(pos).isAir();
     }
 
     private static void evaluateSafeRetreat(Minecraft mc, LocalPlayer self) {
@@ -1189,6 +1282,7 @@ public final class BedWarsOverlay {
             if (!(raw instanceof AbstractClientPlayer p)) continue;
             if (p == self || !p.isAlive() || p.isSpectator()) continue;
             if (!box.intersects(p.getBoundingBox())) continue;
+
             PlayerTeam team = mc.level.getScoreboard().getPlayersTeam(p.getScoreboardName());
             if (myTeam != null && myTeam.equals(team)) {
                 if (self.distanceTo(p) <= 17.0f) nearbyAllies++;
@@ -1202,15 +1296,17 @@ public final class BedWarsOverlay {
         double enemyHpSum = 0.0;
         double pressure = 0.0;
         Vec3 pressureVec = Vec3.ZERO;
+
         for (AbstractClientPlayer enemy : threats) {
             double dist = Math.max(0.8, self.distanceTo(enemy));
             if (dist <= 16.0) closeThreats++;
-            double enemyHp = enemy.getHealth() + enemy.getAbsorptionAmount();
-            enemyHpSum += enemyHp;
+            enemyHpSum += enemy.getHealth() + enemy.getAbsorptionAmount();
+
             double eta = etaToContact(self, enemy, dist);
             double etaFactor = (eta > 0.0 && eta < 8.0) ? (8.0 - eta) / 8.0 : 0.0;
             double weight = (1.0 / dist) * (1.0 + etaFactor + (isAiming(enemy) ? 0.35 : 0.0));
             pressure += weight;
+
             Vec3 toEnemy = enemy.position().subtract(self.position());
             Vec3 flat = new Vec3(toEnemy.x, 0.0, toEnemy.z);
             if (flat.lengthSqr() > 1.0e-6) {
@@ -1222,15 +1318,14 @@ public final class BedWarsOverlay {
         int allySupport = nearbyAllies + 1;
         double enemyToSelfHpRatio = enemyHpSum / Math.max(1.0, selfHp);
         boolean outnumbered = effectiveEnemies > allySupport;
-        boolean lowHp = selfHp <= 10.0 && effectiveEnemies >= 1;
+        boolean lowHp = selfHp <= 10.0;
         boolean hpDisadvantage = enemyToSelfHpRatio >= 1.55 && effectiveEnemies >= 2;
         boolean heavyPressure = pressure >= 0.42 && effectiveEnemies >= 2;
-        boolean likelyLosing = outnumbered || lowHp || hpDisadvantage || heavyPressure;
-        if (!likelyLosing) return;
+        if (!(outnumbered || lowHp || hpDisadvantage || heavyPressure)) return;
 
         Vec3 retreatDir = chooseSafeRetreatDirection(mc, self, pressureVec, threats);
         if (retreatDir.lengthSqr() < 1.0e-6) return;
-        String arrow = directionArrowFromVector(self, retreatDir);
+
         String reason;
         if (outnumbered) {
             reason = String.format(Locale.ROOT, "%dv%d", effectiveEnemies, allySupport);
@@ -1244,7 +1339,7 @@ public final class BedWarsOverlay {
 
         retreatAlertDanger = true;
         retreatAlertColor = (effectiveEnemies >= 3 || selfHp <= 7.0) ? 0xFFFF4444 : 0xFFFFAA55;
-        retreatAlertText = "RETREAT " + arrow + "  " + reason;
+        retreatAlertText = "RETREAT " + directionArrowFromVector(self, retreatDir) + "  " + reason;
     }
 
     private static Vec3 chooseSafeRetreatDirection(Minecraft mc, LocalPlayer self, Vec3 pressureVec,
@@ -1256,9 +1351,7 @@ public final class BedWarsOverlay {
         } else {
             fallback = new Vec3(-pressureVec.x, 0.0, -pressureVec.z);
         }
-        if (fallback.lengthSqr() < 1.0e-6) {
-            fallback = new Vec3(0.0, 0.0, 1.0);
-        }
+        if (fallback.lengthSqr() < 1.0e-6) fallback = new Vec3(0.0, 0.0, 1.0);
         fallback = fallback.normalize();
 
         Vec3 bestDir = fallback;
@@ -1278,16 +1371,13 @@ public final class BedWarsOverlay {
     private static double scoreRetreatDirection(Minecraft mc, LocalPlayer self, Vec3 dir,
                                                 List<AbstractClientPlayer> threats) {
         dir = dir.normalize();
+        int baseY = self.blockPosition().getY();
         BlockPos near = new BlockPos(
-            Mth.floor(self.getX() + dir.x * RETREAT_SAMPLE_DISTANCE),
-            self.blockPosition().getY(),
-            Mth.floor(self.getZ() + dir.z * RETREAT_SAMPLE_DISTANCE)
-        );
+            Mth.floor(self.getX() + dir.x * RETREAT_SAMPLE_DISTANCE), baseY,
+            Mth.floor(self.getZ() + dir.z * RETREAT_SAMPLE_DISTANCE));
         BlockPos far = new BlockPos(
-            Mth.floor(self.getX() + dir.x * RETREAT_SAMPLE_DISTANCE_FAR),
-            self.blockPosition().getY(),
-            Mth.floor(self.getZ() + dir.z * RETREAT_SAMPLE_DISTANCE_FAR)
-        );
+            Mth.floor(self.getX() + dir.x * RETREAT_SAMPLE_DISTANCE_FAR), baseY,
+            Mth.floor(self.getZ() + dir.z * RETREAT_SAMPLE_DISTANCE_FAR));
 
         double safety = 0.0;
         if (!isVoidColumn(mc, near, 12)) safety += 1.4;
@@ -1299,9 +1389,8 @@ public final class BedWarsOverlay {
             Vec3 away = new Vec3(fromEnemy.x, 0.0, fromEnemy.z);
             if (away.lengthSqr() < 1.0e-6) continue;
             away = away.normalize();
-            double align = dir.dot(away); // >0 means direction moves away from enemy
-            double dist = Math.max(1.0, self.distanceTo(enemy));
-            safety += align * (10.0 / dist);
+            // dot > 0 means the direction moves away from this enemy; nearer enemies weigh more.
+            safety += dir.dot(away) * (10.0 / Math.max(1.0, self.distanceTo(enemy)));
         }
         return safety;
     }
@@ -1311,14 +1400,19 @@ public final class BedWarsOverlay {
         forward = new Vec3(forward.x, 0.0, forward.z);
         if (forward.lengthSqr() < 1.0e-6) return "↑";
         forward = forward.normalize();
+
         Vec3 to = new Vec3(toTarget.x, 0.0, toTarget.z);
         if (to.lengthSqr() < 1.0e-6) return "↑";
         to = to.normalize();
+
         Vec3 right = new Vec3(-forward.z, 0.0, forward.x);
-        double front = forward.dot(to);
-        double side = right.dot(to);
-        if (front >= 0.9239) return "↑";
-        if (front <= -0.9239) return "↓";
+        return arrowFor(forward.dot(to), right.dot(to));
+    }
+
+    /** Maps a (front, side) unit projection onto one of eight arrow glyphs. */
+    private static String arrowFor(double front, double side) {
+        if (front >= 0.9239) return "↑";   // <= 22.5°
+        if (front <= -0.9239) return "↓";  // >= 157.5°
         if (Math.abs(side) >= 0.9239) return side > 0 ? "→" : "←";
         if (front > 0) return side > 0 ? "↗" : "↖";
         return side > 0 ? "↘" : "↙";
@@ -1342,26 +1436,19 @@ public final class BedWarsOverlay {
         if (rlen < 1.0e-6) return 0.0;
 
         // Relative velocity (enemy against player), projected on line-of-sight.
-        double evx = p.getX() - p.xo;
-        double evz = p.getZ() - p.zo;
-        double svx = self.getX() - self.xo;
-        double svz = self.getZ() - self.zo;
-        double rvx = evx - svx;
-        double rvz = evz - svz;
-
-        double nx = rx / rlen;
-        double nz = rz / rlen;
-        double closingPerTick = rvx * nx + rvz * nz;
+        double rvx = (p.getX() - p.xo) - (self.getX() - self.xo);
+        double rvz = (p.getZ() - p.zo) - (self.getZ() - self.zo);
+        double closingPerTick = rvx * (rx / rlen) + rvz * (rz / rlen);
         if (closingPerTick <= 0.018) return Double.POSITIVE_INFINITY;
-        double etaSec = (rlen / closingPerTick) / 20.0;
-        return Mth.clamp(etaSec, 0.0, 20.0);
+
+        return Mth.clamp((rlen / closingPerTick) / 20.0, 0.0, 20.0);
     }
 
     private static String moveDir(AbstractClientPlayer p) {
         double vx = p.getX() - p.xo;
         double vz = p.getZ() - p.zo;
-        double speedSq = vx * vx + vz * vz;
-        if (speedSq < 0.0009) return "•";
+        if (vx * vx + vz * vz < 0.0009) return "•";
+
         double yaw = Mth.wrapDegrees((float) Math.toDegrees(Math.atan2(-vx, vz)));
         double abs = Math.abs(yaw);
         if (abs <= 22.5) return "↑";
@@ -1371,62 +1458,41 @@ public final class BedWarsOverlay {
             : (abs <= 67.5 ? "↖" : abs <= 112.5 ? "←" : "↙");
     }
 
-    private static String computeFreshnessLabel(boolean usedCache) {
-        if (scanState.active) return "SCAN";
-        return usedCache ? "CACHE" : "LIVE";
-    }
-
-    private static String freshnessLabel() {
-        return cachedFreshnessLabel;
-    }
-
-    private static int freshnessColor(boolean usedCache) {
-        if (scanState.active) return 0xFF55FFFF;
-        return usedCache ? 0xFFFFAA55 : 0xFF55FF55;
-    }
-
     // ── Таблица командных сил ─────────────────────────────────────────────────
 
-    private static void drawTeamTable(GuiGraphics g, Minecraft mc,
-                                       List<TeamStat> stats,
-                                       int x, int y, int w) {
+    private static int drawTeamTable(GuiGraphics g, Minecraft mc, List<TeamStat> stats, int x, int y, int w) {
         txt(g, mc, "TEAM POWER", x, y, 0xFFFFAA00);
         y += ROW_H;
 
         int maxScore = stats.stream().mapToInt(TeamStat::score).max().orElse(1);
-        TeamStat weakest  = stats.stream().filter(s -> !s.isMyTeam())
+        TeamStat weakest = stats.stream().filter(s -> !s.isMyTeam())
             .min(Comparator.comparingInt(TeamStat::score)).orElse(null);
         TeamStat strongest = stats.stream().filter(s -> !s.isMyTeam())
             .max(Comparator.comparingInt(TeamStat::score)).orElse(null);
 
         for (TeamStat ts : stats) {
-            // Цветной квадрат команды 5×5px
+            // Цветной квадрат команды
             g.fill(x, y + 2, x + 6, y + 7, 0xFF000000);
             g.fill(x + 1, y + 3, x + 5, y + 7, 0xFF000000 | (ts.nameColor() & 0x00FFFFFF));
 
-            // Имя
             txt(g, mc, ts.name(), x + 8, y, ts.nameColor());
-
-            // Число игроков
             txt(g, mc, ts.playerCount() + "p", x + 52, y, 0xFFAAAAAA);
 
-            // Полоска силы 30×5px
-            int bx    = x + 68;
-            int by    = y + 2;
-            int bw    = 30;
-            int bh    = 5;
-            int bfill = maxScore > 0 ? (int)((long) ts.score() * bw / maxScore) : 0;
+            // Полоска силы
+            int bx = x + 68;
+            int by = y + 2;
+            int bw = 30;
+            int bh = 5;
+            int bfill = maxScore > 0 ? (int) ((long) ts.score() * bw / maxScore) : 0;
             int barCol = ts.isMyTeam() ? 0xFF55AA55
                 : (ts == strongest ? 0xFFFF5555
-                :  (ts == weakest  ? 0xFF55FF55 : 0xFFFFAA00));
+                : (ts == weakest ? 0xFF55FF55 : 0xFFFFAA00));
             g.fill(bx - 1, by - 1, bx + bw + 1, by + bh + 1, 0xFF000000);
             g.fill(bx, by, bx + bw, by + bh, 0x33FFFFFF);
             if (bfill > 0) g.fill(bx, by, bx + bfill, by + bh, barCol);
 
-            // Кровать: символ + защита
             drawBedStatus(g, mc, ts, x + 100, y);
 
-            // Тег справа
             String tag;
             int tagColor;
             if (ts.isMyTeam()) {
@@ -1434,39 +1500,35 @@ public final class BedWarsOverlay {
             } else if (ts == weakest && ts != strongest) {
                 tag = "→HUNT"; tagColor = 0xFF55FF55;
             } else if (ts == strongest) {
-                tag = "THRT";  tagColor = 0xFFFF5555;
+                tag = "THRT"; tagColor = 0xFFFF5555;
             } else {
-                tag = "";      tagColor = 0;
+                tag = ""; tagColor = 0;
             }
-            if (!tag.isEmpty()) {
-                txt(g, mc, tag, x + w - mc.font.width(tag), y, tagColor);
-            }
+            if (!tag.isEmpty()) txt(g, mc, tag, x + w - mc.font.width(tag), y, tagColor);
 
             y += ROW_H;
         }
+        return y;
     }
 
-    /**
-     * Рисует статус кровати: символ (✔/✗/?) + код защиты (OBS/END/TER/WOL/---).
-     * Располагается в 58px → x+58.
-     */
+    /** Символ (✔/✗/?) + код защиты (OBS/END/TER/WOL/---) + оценка сложности пробития. */
     private static void drawBedStatus(GuiGraphics g, Minecraft mc, TeamStat ts, int x, int y) {
         BedInfo bed = ts.bed();
-        String  sym;
-        int     symCol;
-        String  defTxt;
-        int     defCol;
+        String sym;
+        int symCol;
+        String defTxt;
+        int defCol;
 
         if (bed == null) {
-            sym    = "?";     symCol = 0xFF777777;
-            defTxt = "UNK";   defCol = 0xFF777777;
+            sym = "?";      symCol = 0xFF777777;
+            defTxt = "UNK"; defCol = 0xFF777777;
         } else if (bed.alive()) {
-            sym    = "✔";  symCol = 0xFF55FF55;   // ✔
+            sym = "✔"; symCol = 0xFF55FF55;
             defTxt = defCode(bed.defScore());
             defCol = defColor(bed.defScore());
         } else {
-            sym    = "✗";  symCol = 0xFFFF5555;   // ✗
-            defTxt = "";        defCol = 0;
+            sym = "✗"; symCol = 0xFFFF5555;
+            defTxt = "";    defCol = 0;
         }
 
         txt(g, mc, sym, x, y, symCol);
@@ -1477,13 +1539,25 @@ public final class BedWarsOverlay {
         }
     }
 
+    // ── Лента событий матча ───────────────────────────────────────────────────
+
+    private static void drawMatchLog(GuiGraphics g, Minecraft mc, List<MatchTracker.LogLine> lines, int x, int y) {
+        txt(g, mc, "MATCH LOG", x, y, 0xFF88AACC);
+        y += ROW_H;
+        for (MatchTracker.LogLine line : lines) {
+            txt(g, mc, line.time(), x, y, 0xFF7A8894);
+            txt(g, mc, line.text(), x + 32, y, line.argb());
+            y += ROW_H;
+        }
+    }
+
     // ── Агрегация данных команд ──────────────────────────────────────────────
 
     private static List<TeamStat> buildTeamStats(Minecraft mc,
-                                                  LocalPlayer self,
-                                                  List<AbstractClientPlayer> enemies,
-                                                  List<AbstractClientPlayer> teammates,
-                                                  PlayerTeam myTeam) {
+                                                 LocalPlayer self,
+                                                 List<AbstractClientPlayer> enemies,
+                                                 List<AbstractClientPlayer> teammates,
+                                                 PlayerTeam myTeam) {
         Map<PlayerTeam, List<AbstractClientPlayer>> aliveByTeam = new LinkedHashMap<>();
         for (AbstractClientPlayer p : enemies) {
             PlayerTeam t = mc.level.getScoreboard().getPlayersTeam(p.getScoreboardName());
@@ -1493,82 +1567,107 @@ public final class BedWarsOverlay {
             PlayerTeam t = mc.level.getScoreboard().getPlayersTeam(p.getScoreboardName());
             if (t != null) aliveByTeam.computeIfAbsent(t, k -> new ArrayList<>()).add(p);
         }
-        if (self instanceof AbstractClientPlayer acp && myTeam != null) {
-            aliveByTeam.computeIfAbsent(myTeam, k -> new ArrayList<>()).add(acp);
+        if (myTeam != null) {
+            aliveByTeam.computeIfAbsent(myTeam, k -> new ArrayList<>()).add(self);
         }
 
         List<TeamStat> stats = new ArrayList<>();
         Set<PlayerTeam> addedEnemyTeams = new LinkedHashSet<>();
 
-        // Use scoreboard teams as a source of truth so teams don't disappear when all members are dead/respawning.
+        // Scoreboard teams are the source of truth, so a team doesn't vanish from the table while
+        // all of its members are dead or respawning.
         for (PlayerTeam t : mc.level.getScoreboard().getPlayerTeams()) {
             if (t == null) continue;
             if (myTeam != null && myTeam.equals(t)) continue;
+
             List<AbstractClientPlayer> pl = aliveByTeam.getOrDefault(t, List.of());
-            BedInfo bed = bedForTeam(t, true, false);
-            // Do not show "noise" scoreboard teams:
-            // keep only currently active teams or teams with known bed state.
+            BedInfo bed = resolveBed(t, false);
+            if (isLikelyInternalTeamName(t) && bed == null) continue;
+            // Skip "noise" scoreboard teams: keep only active teams or ones with known bed state.
             if (pl.isEmpty() && bed == null) continue;
-            int nc = teamDisplayColor(mc, t);
-            stats.add(new TeamStat(t, t != null ? cap(t.getName(), 7) : "?",
-                nc, pl.size(), computeScore(pl), bestArmorIn(pl), false, bed));
+
+            stats.add(new TeamStat(t, cap(t.getName(), 7), TeamColors.displayArgb(t),
+                pl.size(), computeScore(pl), bestArmorIn(pl), false, bed));
             addedEnemyTeams.add(t);
         }
 
-        // Keep backward compatibility: include alive enemy teams that may be absent from scoreboard team list.
+        // Keep alive enemy teams that may be absent from the scoreboard team list.
         for (Map.Entry<PlayerTeam, List<AbstractClientPlayer>> e : aliveByTeam.entrySet()) {
             PlayerTeam t = e.getKey();
-            if (t == null) continue;
+            if (t == null || addedEnemyTeams.contains(t)) continue;
             if (myTeam != null && myTeam.equals(t)) continue;
-            if (addedEnemyTeams.contains(t)) continue;
-            List<AbstractClientPlayer> pl = e.getValue();
-            int nc = teamDisplayColor(mc, t);
-            stats.add(new TeamStat(t, cap(t.getName(), 7), nc, pl.size(), computeScore(pl), bestArmorIn(pl), false,
-                bedForTeam(t, true, false)));
+
+            BedInfo bed = resolveBed(t, false);
+            if (isLikelyInternalTeamName(t) && bed == null) continue;
+            stats.add(new TeamStat(t, cap(t.getName(), 7), TeamColors.displayArgb(t),
+                e.getValue().size(), computeScore(e.getValue()), bestArmorIn(e.getValue()), false, bed));
         }
 
         if (!teammates.isEmpty() || myTeam != null) {
             List<AbstractClientPlayer> mine = new ArrayList<>(teammates);
-            if (self instanceof AbstractClientPlayer acp) mine.add(acp);
-            int nc = teamDisplayColor(mc, myTeam);
+            mine.add(self);
             stats.add(new TeamStat(myTeam, myTeam != null ? cap(myTeam.getName(), 7) : "YOU",
-                nc, mine.size(), computeScore(mine), bestArmorIn(mine), true,
-                bedForTeam(myTeam, true, true)));
+                TeamColors.displayArgb(myTeam), mine.size(), computeScore(mine), bestArmorIn(mine),
+                true, resolveBed(myTeam, true)));
         }
 
         stats.sort(Comparator.comparingInt(TeamStat::score).reversed());
         return stats;
     }
 
-    private static BedInfo bedForTeam(PlayerTeam team, boolean allowInferenceFallback, boolean strictInference) {
+    /**
+     * Bed state for a team, combining the block scanner with chat announcements.
+     *
+     * <p>Chat wins when it reports a destroyed bed: it is authoritative at any distance, while
+     * the scanner only ever sees the area around the player. Chat can never mark a bed as alive,
+     * so this can only downgrade a status — it cannot invent one.</p>
+     */
+    private static BedInfo resolveBed(PlayerTeam team, boolean strictInference) {
+        BedInfo scanned = bedForTeam(team, strictInference);
+        if (!ScopeConfig.MATCH_LOG_ENABLED.get()) return scanned;
+
+        DyeColor dye = TeamColors.ofTeam(team);
+        if (dye == null || MatchTracker.bedState(dye) != MatchTracker.BedState.DESTROYED) return scanned;
+
+        return scanned != null
+            ? new BedInfo(scanned.pos(), scanned.color(), false, 0)
+            : new BedInfo(BlockPos.ZERO, dye, false, 0);
+    }
+
+    private static boolean isLikelyInternalTeamName(PlayerTeam team) {
+        String name = team.getName();
+        if (name == null) return false;
+        String n = name.toLowerCase(Locale.ROOT);
+        // Common server-side technical team names that should not be shown in BedWars table.
+        return n.matches("sb-\\d+") || n.matches("team\\d+") || n.matches("line-\\d+");
+    }
+
+    private static BedInfo bedForTeam(PlayerTeam team, boolean strictInference) {
         Minecraft mc = Minecraft.getInstance();
         if (team == null || mc.level == null) return null;
 
-        BedInfo inferred = allowInferenceFallback ? inferBedByTeamPlayers(mc, team, strictInference) : null;
+        BedInfo inferred = inferBedByTeamPlayers(mc, team, strictInference);
 
         // Primary mapping: team color -> bed dye.
-        DyeColor dye = teamColorToDye(team);
+        DyeColor dye = TeamColors.ofTeam(team);
         if (dye != null) {
             BedInfo direct = bedData.get(dye);
             if (direct != null) {
-                // If there are multiple beds with same dye, prefer position-based inference.
-                if (inferred != null && countBedsByColor(dye) > 1) return inferred;
-                return direct;
+                // If several beds share this dye, position-based inference is more trustworthy.
+                return (inferred != null && countBedsByColor(dye) > 1) ? inferred : direct;
             }
         }
 
-        // Additional mapping: some servers use nearby palette variants for team colors.
-        for (DyeColor alt : teamColorAlternatives(team)) {
+        // Some servers use nearby palette variants for team colors.
+        for (DyeColor alt : TeamColors.alternatives(team)) {
             BedInfo byAlt = bedData.get(alt);
             if (byAlt != null) {
-                if (inferred != null && countBedsByColor(alt) > 1) return inferred;
-                return byAlt;
+                return (inferred != null && countBedsByColor(alt) > 1) ? inferred : byAlt;
             }
         }
 
         // Fallback for servers with custom scoreboard formatting:
         // pick the closest known bed to the members of this team.
-        // For own team we avoid this heuristic to prevent false "alive" bed status.
         return inferred;
     }
 
@@ -1585,8 +1684,9 @@ public final class BedWarsOverlay {
         for (Player raw : mc.level.players()) {
             if (!(raw instanceof AbstractClientPlayer p)) continue;
             if (!p.isAlive() || p.isSpectator()) continue;
-            PlayerTeam t = mc.level.getScoreboard().getPlayersTeam(p.getScoreboardName());
-            if (team.equals(t)) teamPlayers.add(p);
+            if (team.equals(mc.level.getScoreboard().getPlayersTeam(p.getScoreboardName()))) {
+                teamPlayers.add(p);
+            }
         }
         if (teamPlayers.isEmpty()) return null;
 
@@ -1613,10 +1713,8 @@ public final class BedWarsOverlay {
         // Ignore clearly unrelated beds; for own-team fallback require higher confidence.
         double maxDist = strictInference ? 140.0 : 220.0;
         if (bestAvg > (maxDist * maxDist)) return null;
-        if (strictInference && secondBestAvg < Double.MAX_VALUE) {
-            // Best match should be meaningfully better than next candidate.
-            if (bestAvg > secondBestAvg * 0.80) return null;
-        }
+        // Best match should be meaningfully better than the next candidate.
+        if (strictInference && secondBestAvg < Double.MAX_VALUE && bestAvg > secondBestAvg * 0.80) return null;
         return best;
     }
 
@@ -1624,17 +1722,21 @@ public final class BedWarsOverlay {
         int total = 0;
         for (AbstractClientPlayer p : players) {
             float hpPct = p.getHealth() / Math.max(1f, p.getMaxHealth());
-            total += (int)(hpPct * 100) + armorScoreOf(armorChar(p)) * 15;
+            total += (int) (hpPct * 100) + armorScoreOf(armorChar(p)) * 15;
         }
         return total;
     }
 
     private static String bestArmorIn(List<AbstractClientPlayer> players) {
-        int best = 0; String bestTier = "";
+        int best = 0;
+        String bestTier = "";
         for (AbstractClientPlayer p : players) {
             String a = armorChar(p);
             int s = armorScoreOf(a);
-            if (s > best) { best = s; bestTier = a; }
+            if (s > best) {
+                best = s;
+                bestTier = a;
+            }
         }
         return bestTier;
     }
@@ -1642,11 +1744,11 @@ public final class BedWarsOverlay {
     // ── Защита кровати ────────────────────────────────────────────────────────
 
     private static String defCode(int score) {
-        if (score == 0)   return "---";
-        if (score < 25)   return "WOL";   // вул/дерево (слабая)
-        if (score < 70)   return "TER";   // терракота/бетон (средняя)
-        if (score < 140)  return "END";   // энд-камень (сильная)
-        return "OBS";                     // обсидиан (максимальная)
+        if (score == 0)  return "---";
+        if (score < 25)  return "WOL";   // вул/дерево (слабая)
+        if (score < 70)  return "TER";   // терракота/бетон (средняя)
+        if (score < 140) return "END";   // энд-камень (сильная)
+        return "OBS";                    // обсидиан (максимальная)
     }
 
     private static int defColor(int score) {
@@ -1672,100 +1774,6 @@ public final class BedWarsOverlay {
         };
     }
 
-    // ── ChatFormatting → DyeColor (для сопоставления команды и кровати) ─────
-
-    private static DyeColor teamColorToDye(PlayerTeam team) {
-        if (team == null) return null;
-        // 1) Primary source: explicit team formatting color.
-        DyeColor byFormatting = chatFormattingToDye(team.getColor());
-        if (byFormatting != null) return byFormatting;
-
-        // 2) Fallback: style color in team display/prefix (many servers set only this).
-        DyeColor byDisplayStyle = textColorToDye(team.getDisplayName().getStyle().getColor());
-        if (byDisplayStyle != null) return byDisplayStyle;
-
-        DyeColor byPrefixStyle = textColorToDye(team.getPlayerPrefix().getStyle().getColor());
-        if (byPrefixStyle != null) return byPrefixStyle;
-
-        // 3) Last fallback: parse team name keywords (Red, Blue, Aqua, etc.).
-        return nameToDye(team.getName());
-    }
-
-    private static DyeColor chatFormattingToDye(ChatFormatting fmt) {
-        if (fmt == null) return null;
-        return switch (fmt) {
-            case RED, DARK_RED       -> DyeColor.RED;
-            case BLUE, DARK_BLUE     -> DyeColor.BLUE;
-            case GREEN, DARK_GREEN   -> DyeColor.GREEN;
-            case YELLOW              -> DyeColor.YELLOW;
-            case AQUA, DARK_AQUA     -> DyeColor.CYAN;
-            case WHITE               -> DyeColor.WHITE;
-            case LIGHT_PURPLE        -> DyeColor.PINK;
-            case DARK_PURPLE         -> DyeColor.PURPLE;
-            case GOLD                -> DyeColor.ORANGE;
-            case GRAY                -> DyeColor.LIGHT_GRAY;
-            case DARK_GRAY           -> DyeColor.GRAY;
-            case BLACK               -> DyeColor.BLACK;
-            default                  -> null;
-        };
-    }
-
-    private static DyeColor textColorToDye(TextColor tc) {
-        if (tc == null) return null;
-        int rgb = tc.getValue() & 0x00FFFFFF;
-
-        DyeColor best = null;
-        int bestDist = Integer.MAX_VALUE;
-        for (DyeColor dye : DyeColor.values()) {
-            int c = dye.getMapColor().col;
-            int dr = ((rgb >> 16) & 0xFF) - ((c >> 16) & 0xFF);
-            int dg = ((rgb >> 8) & 0xFF) - ((c >> 8) & 0xFF);
-            int db = (rgb & 0xFF) - (c & 0xFF);
-            int dist = dr * dr + dg * dg + db * db;
-            if (dist < bestDist) {
-                bestDist = dist;
-                best = dye;
-            }
-        }
-        // Safety threshold: avoid random mismatches on neutral colors.
-        return bestDist <= 14000 ? best : null;
-    }
-
-    private static DyeColor nameToDye(String rawName) {
-        if (rawName == null) return null;
-        String n = rawName.toLowerCase(Locale.ROOT);
-        if (n.contains("lime"))   return DyeColor.LIME;
-        if (n.contains("red"))    return DyeColor.RED;
-        if (n.contains("blue"))   return DyeColor.BLUE;
-        if (n.contains("green"))  return DyeColor.GREEN;
-        if (n.contains("yellow")) return DyeColor.YELLOW;
-        if (n.contains("teal"))   return DyeColor.CYAN;
-        if (n.contains("cyan"))   return DyeColor.CYAN;
-        if (n.contains("lightblue")) return DyeColor.LIGHT_BLUE;
-        if (n.contains("aqua"))   return DyeColor.CYAN;
-        if (n.contains("white"))  return DyeColor.WHITE;
-        if (n.contains("pink"))   return DyeColor.PINK;
-        if (n.contains("gray") || n.contains("grey")) return DyeColor.GRAY;
-        if (n.contains("orange")) return DyeColor.ORANGE;
-        if (n.contains("purple")) return DyeColor.PURPLE;
-        if (n.contains("black"))  return DyeColor.BLACK;
-        return null;
-    }
-
-    private static List<DyeColor> teamColorAlternatives(PlayerTeam team) {
-        if (team == null) return List.of();
-        ChatFormatting fmt = team.getColor();
-        if (fmt == null) return List.of();
-        return switch (fmt) {
-            case GREEN, DARK_GREEN -> List.of(DyeColor.GREEN, DyeColor.LIME);
-            case AQUA, DARK_AQUA   -> List.of(DyeColor.CYAN, DyeColor.LIGHT_BLUE);
-            case BLUE, DARK_BLUE   -> List.of(DyeColor.BLUE, DyeColor.LIGHT_BLUE);
-            case GRAY, DARK_GRAY   -> List.of(DyeColor.GRAY, DyeColor.LIGHT_GRAY);
-            case WHITE             -> List.of(DyeColor.WHITE, DyeColor.LIGHT_GRAY);
-            default                -> List.of();
-        };
-    }
-
     // ── Вспомогательные методы ───────────────────────────────────────────────
 
     private static void txt(GuiGraphics g, Minecraft mc, String s, int x, int y, int color) {
@@ -1784,17 +1792,8 @@ public final class BedWarsOverlay {
         if (to.lengthSqr() < 1.0e-6) return "↑";
         to = to.normalize();
 
-        // Right vector in XZ plane.
         Vec3 right = new Vec3(-forward.z, 0.0, forward.x);
-        double front = forward.dot(to);
-        double side = right.dot(to);
-
-        if (front >= 0.9239) return "↑";   // <= 22.5°
-        if (front <= -0.9239) return "↓";  // >= 157.5°
-        if (Math.abs(side) >= 0.9239) return side > 0 ? "→" : "←";
-
-        if (front > 0) return side > 0 ? "↗" : "↖";
-        return side > 0 ? "↘" : "↙";
+        return arrowFor(forward.dot(to), right.dot(to));
     }
 
     private static boolean isAiming(AbstractClientPlayer p) {
@@ -1807,9 +1806,7 @@ public final class BedWarsOverlay {
                 EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET
         }) {
             String tier = armorTier(p.getItemBySlot(slot));
-            if (armorScoreOf(tier) > armorScoreOf(best)) {
-                best = tier;
-            }
+            if (armorScoreOf(tier) > armorScoreOf(best)) best = tier;
         }
         return best;
     }
@@ -1843,27 +1840,19 @@ public final class BedWarsOverlay {
         };
     }
 
-    private static int teamDisplayColor(Minecraft mc, PlayerTeam team) {
-        if (team != null) {
-            ChatFormatting fmt = team.getColor();
-            if (fmt.getColor() != null) return 0xFF000000 | fmt.getColor();
-        }
-        return 0xFFFFFFFF;
-    }
-
     private static int nameColor(Minecraft mc, AbstractClientPlayer p) {
         PlayerTeam team = mc.level.getScoreboard().getPlayersTeam(p.getScoreboardName());
         if (team != null) {
             ChatFormatting fmt = team.getColor();
-            if (fmt.getColor() != null) return 0xFF000000 | fmt.getColor();
+            if (fmt != null && fmt.getColor() != null) return 0xFF000000 | fmt.getColor();
         }
         Style style = p.getDisplayName().getStyle();
         TextColor tc = style.getColor();
-        if (tc != null) return 0xFF000000 | tc.getValue();
-        return 0xFFFFFFFF;
+        return tc != null ? 0xFF000000 | tc.getValue() : 0xFFFFFFFF;
     }
 
     private static String cap(String s, int maxChars) {
+        if (maxChars <= 1) return s.isEmpty() ? s : "…";
         return s.length() <= maxChars ? s : s.substring(0, maxChars - 1) + "…";
     }
 }

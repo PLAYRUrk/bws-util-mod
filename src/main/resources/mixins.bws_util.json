@@ -3,7 +3,7 @@
   "package": "ru.pleeey.bwsutil.mixin",
   "compatibilityLevel": "JAVA_21",
   "minVersion": "0.8",
-  "client": ["GuiRendererMixin", "GuiMixin", "GameRendererMixin"],
+  "client": ["GuiRendererMixin"],
   "injectors": {
     "defaultRequire": 0
   }

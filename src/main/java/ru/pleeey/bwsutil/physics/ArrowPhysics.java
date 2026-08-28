@@ -1,10 +1,28 @@
 package ru.pleeey.bwsutil.physics;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 public final class ArrowPhysics {
 
     private static final double GRAVITY   = 0.05;
     private static final double DRAG      = 0.99;
     public  static final double FULL_SPEED = 3.0;
+
+    /**
+     * Memoization for {@link #zeroAngle(double, double)}.
+     *
+     * <p>A single {@code zeroAngle} call runs a 64-step binary search, and every step simulates
+     * the arrow tick by tick. The scope calls it a dozen times per frame with arguments that
+     * barely change, so results are cached on a quantized (distance, power) grid. Quantization
+     * is far below what a pixel on screen can resolve, so it costs no visible accuracy.</p>
+     */
+    private static final Map<Long, Double> ZERO_ANGLE_CACHE = new ConcurrentHashMap<>();
+
+    private static final double DIST_QUANTUM  = 0.5;
+    private static final double POWER_QUANTUM = 0.02;
+    /** Safety valve: the grid is small in practice, but never let the cache grow without bound. */
+    private static final int CACHE_MAX_ENTRIES = 8_192;
 
     private ArrowPhysics() {}
 
@@ -30,6 +48,20 @@ public final class ArrowPhysics {
     }
 
     public static double zeroAngle(double zeroDistance, double power) {
+        long distKey  = Math.round(zeroDistance / DIST_QUANTUM);
+        long powerKey = Math.round(power / POWER_QUANTUM);
+        long key = distKey * 8_192L + powerKey;
+
+        Double cached = ZERO_ANGLE_CACHE.get(key);
+        if (cached != null) return cached;
+
+        double angle = computeZeroAngle(distKey * DIST_QUANTUM, powerKey * POWER_QUANTUM);
+        if (ZERO_ANGLE_CACHE.size() >= CACHE_MAX_ENTRIES) ZERO_ANGLE_CACHE.clear();
+        ZERO_ANGLE_CACHE.put(key, angle);
+        return angle;
+    }
+
+    private static double computeZeroAngle(double zeroDistance, double power) {
         double lo = 0.0, hi = 45.0;
         for (int i = 0; i < 64; i++) {
             double mid = (lo + hi) * 0.5;

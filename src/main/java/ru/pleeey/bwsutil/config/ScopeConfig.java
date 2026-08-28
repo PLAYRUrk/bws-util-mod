@@ -20,6 +20,8 @@ public class ScopeConfig {
     public static final ForgeConfigSpec.BooleanValue VOID_WARNING_SOUND;
     public static final ForgeConfigSpec.IntValue FIREBALL_WARNING_VOLUME;
     public static final ForgeConfigSpec.IntValue VOID_WARNING_VOLUME;
+    public static final ForgeConfigSpec.BooleanValue EMERGENCY_BLOCK_SWAP_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue MATCH_LOG_ENABLED;
 
     static {
         BUILDER.comment("BWS Util client settings");
@@ -76,7 +78,25 @@ public class ScopeConfig {
             .comment("Bridge/void warning sound volume in percent")
             .defineInRange("void_warning_volume", 70, 0, 100);
 
+        EMERGENCY_BLOCK_SWAP_ENABLED = BUILDER
+            .comment("Auto-select a hotbar block slot when a fatal fall or void drop is detected")
+            .define("emergency_block_swap_enabled", true);
+
+        MATCH_LOG_ENABLED = BUILDER
+            .comment("Track BedWars chat events (bed destruction, team elimination) and show a match log")
+            .define("match_log_enabled", true);
+
         SPEC = BUILDER.build();
+    }
+
+    /**
+     * Forces a write of the in-memory config to disk.
+     *
+     * <p>{@code ConfigValue.set} only mutates the loaded config; without this call the changes
+     * made through the settings screen or the {@code +}/{@code -} keys are lost on exit.</p>
+     */
+    public static void save() {
+        if (SPEC.isLoaded()) SPEC.save();
     }
 
     private ScopeConfig() {}
