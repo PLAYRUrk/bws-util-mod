@@ -1,5 +1,6 @@
 package ru.pleeey.bwsutil.client.overlay;
 
+import ru.pleeey.bwsutil.client.aim.AimSolver;
 import ru.pleeey.bwsutil.config.ScopeConfig;
 import ru.pleeey.bwsutil.physics.ArrowPhysics;
 import net.minecraft.client.Minecraft;
@@ -51,6 +52,12 @@ public final class ScopeOverlay {
     private static final double AUTO_AIM_MAX_YAW_DEG = 60.0;
     /** Ниже этого рассогласования доводка не трогает камеру — иначе она мелко дрожит. */
     private static final double AUTO_AIM_DEADZONE_DEG = 0.05;
+    /**
+     * Захват сбрасывается, если цель ушла дальше этого угла от взгляда. Шире конуса захвата:
+     * цель имеет право двигаться, пока игрок держит натяжение, но не имеет права оказаться
+     * за спиной.
+     */
+    private static final double RETARGET_CONE_DEG = 45.0;
 
     // ── Состояние прицела ────────────────────────────────────────────────────
 
@@ -68,11 +75,15 @@ public final class ScopeOverlay {
     /** Доводка реально управляла камерой в последнем тике — для индикатора режима. */
     private static boolean autoAimEngaged = false;
 
+    /** Решение по цели за последний тик; рендер только рисует его. */
+    private static AimSolver.Solution cachedSolution = null;
+
     /** Сбрасывает состояние при выходе с сервера / выгрузке мира. */
     public static void resetState() {
         lockedTarget = null;
         cachedMeasuredDistance = -1;
         autoAimEngaged = false;
+        cachedSolution = null;
     }
 
     public static void toggleEnabled() { enabled = !enabled; }
@@ -99,7 +110,9 @@ public final class ScopeOverlay {
 
     /**
      * Вызывается ровно один раз за игровой тик из ClientGameEvents.
-     * Управляет захватом/сбросом цели в AUTO-режиме.
+     *
+     * <p>Здесь же строится решение по цели: симуляция полёта стрелы по блокам слишком дорога
+     * для кадра, поэтому рендер рисует готовый снимок {@link #cachedSolution}.</p>
      */
     public static void tick(Minecraft mc, LocalPlayer player) {
         if (!enabled || mc.level == null) return;
@@ -117,53 +130,70 @@ public final class ScopeOverlay {
 
         autoAimEngaged = false;
 
-        if (currentMode == ScopeMode.AUTO) {
-            if (isDrawing) {
-                // Если нет валидного захвата — захватываем (первый тик ИЛИ после переключения режима)
-                LivingEntity current = lockedTarget != null ? lockedTarget.get() : null;
-                if (current == null || !current.isAlive()) {
-                    LivingEntity found = findLivingTarget(mc, player);
-                    lockedTarget = found != null ? new WeakReference<>(found) : null;
-                    current = found;
-                }
-
-                // Камера двигается только пока экран закрыт: с открытым GUI игрок не управляет
-                // взглядом, и доворот там был бы неотличим от подёргивания.
-                if (current != null && mc.screen == null && ScopeConfig.AUTO_AIM_ENABLED.get()) {
-                    float charge = BowItem.getPowerForTime(player.getTicksUsingItem());
-                    if (charge > 0.01f) {
-                        applyAutoAim(player, current, charge);
-                    }
-                }
-            } else {
-                // Выстрел произведён или натяжение отменено — сбрасываем
-                lockedTarget = null;
-            }
-        } else {
+        if (currentMode != ScopeMode.AUTO || !isDrawing) {
+            // Выстрел произведён, натяжение отменено или режим сменился — сбрасываем захват.
             lockedTarget = null;
+            cachedSolution = null;
+            return;
         }
+
+        LivingEntity target = acquireTarget(mc, player);
+        if (target == null) {
+            cachedSolution = null;
+            return;
+        }
+
+        float charge = BowItem.getPowerForTime(player.getTicksUsingItem());
+        cachedSolution = AimSolver.solve(player, target, charge, 1.0f, true);
+        if (cachedSolution == null) return;
+
+        // Доводка включается только на полном натяжении: до этого момента скорость стрелы
+        // растёт каждый тик, решение вместе с ней уползает, и камера ехала бы за целью,
+        // которая на самом деле стоит на месте.
+        if (mc.screen == null && ScopeConfig.AUTO_AIM_ENABLED.get() && isFullyDrawn(player)) {
+            applyAutoAim(player, cachedSolution);
+        }
+    }
+
+    /** Натянут ли лук полностью (дальше сила выстрела не растёт). */
+    private static boolean isFullyDrawn(LocalPlayer player) {
+        return player.getTicksUsingItem() >= BowItem.MAX_DRAW_DURATION;
+    }
+
+    /**
+     * Возвращает захваченную цель, при необходимости захватывая заново.
+     *
+     * <p>Захват держится всё натяжение, но перепроверяется каждый тик: цель могла умереть,
+     * стать союзником по скорборду, уйти в невидимость или просто уехать далеко в сторону.
+     * Раньше проверялось только {@code isAlive()}, и захват мог остаться на цели, в которую
+     * игрок уже не целится.</p>
+     */
+    private static LivingEntity acquireTarget(Minecraft mc, LocalPlayer player) {
+        LivingEntity current = lockedTarget != null ? lockedTarget.get() : null;
+        boolean keep = current != null
+            && AimSolver.isValidTarget(player, current)
+            && AimSolver.angleToTarget(player, current) <= RETARGET_CONE_DEG;
+
+        if (!keep) {
+            current = AimSolver.pickTarget(mc, player, AUTO_CONE_RAD);
+            lockedTarget = current != null ? new WeakReference<>(current) : null;
+        }
+        return current;
     }
 
     /** {@code true}, если авто-доводка сейчас ведёт камеру к захваченной цели. */
     public static boolean isAutoAimEngaged() { return autoAimEngaged; }
 
     /**
-     * Доворачивает взгляд игрока к баллистическому решению по захваченной цели.
+     * Доворачивает взгляд игрока к готовому стрелковому решению.
      *
      * <p>Шаг пропорционален оставшемуся рассогласованию и ограничен сверху, поэтому камера
      * подходит к решению по экспоненте, а не телепортируется в него. Мышь игрока при этом
      * продолжает работать: доводка добавляется к текущему повороту, а не заменяет его.</p>
      */
-    private static void applyAutoAim(LocalPlayer player, LivingEntity target, float charge) {
-        AimSolution aim = solveAim(player, target, charge, 1.0f);
-        if (aim == null) return;
-
-        // Взгляд должен быть выше направления на цель ровно на угол бросания.
-        double desiredPitch = Mth.clamp(
-            aim.pitch() - ArrowPhysics.zeroAngle(aim.predictedHorizDist(), charge), -90.0, 90.0);
-
+    private static void applyAutoAim(LocalPlayer player, AimSolver.Solution aim) {
         double dYaw   = Mth.wrapDegrees(aim.yaw() - player.getYRot());
-        double dPitch = desiredPitch - player.getXRot();
+        double dPitch = Mth.clamp(aim.pitch(), -90.0, 90.0) - player.getXRot();
         if (Math.abs(dYaw) > AUTO_AIM_MAX_YAW_DEG) return;
 
         autoAimEngaged = true;
@@ -386,151 +416,46 @@ public final class ScopeOverlay {
     // ── Авто-режим: упреждение ───────────────────────────────────────────────
 
     /**
-     * Баллистическое решение по захваченной цели.
+     * Рисует метку упреждения по решению, посчитанному в тике.
      *
-     * @param yaw                абсолютный yaw (град.) на точку упреждения
-     * @param pitch              абсолютный pitch (град.) на точку упреждения — направление
-     *                           <em>на цель</em>, без угла бросания
-     * @param horizDist          текущая горизонтальная дистанция до цели
-     * @param predictedHorizDist горизонтальная дистанция до точки упреждения
+     * <p>Метка стоит там, куда игрок должен подвести основной крест: тот смещён на угол
+     * пристрелки вниз от центра, поэтому к разнице по pitch добавляется {@code zeroAngleDeg}.
+     * При совмещении креста с ромбом взгляд совпадает с решением — тем самым, к которому
+     * тянет доводка.</p>
      */
-    private record AimSolution(double yaw, double pitch,
-                               double horizDist, double predictedHorizDist) {}
-
-    /**
-     * Считает точку упреждения по цели и время полёта стрелы.
-     *
-     * <p>Общий код для метки на экране и для авто-доводки: обе должны сходиться в одну точку,
-     * иначе ромб показывал бы одно, а камера ехала бы в другое.</p>
-     *
-     * @param partialTick {@code 1.0f} для тик-логики, интерполяция кадра — для рендера
-     * @return решение или {@code null}, если цель слишком близко / траектории нет
-     */
-    private static AimSolution solveAim(LocalPlayer player, LivingEntity target,
-                                        float charge, float partialTick) {
-        Vec3 eyePos = player.getEyePosition(partialTick);
-
-        double tx = Mth.lerp(partialTick, target.xo, target.getX());
-        double ty = Mth.lerp(partialTick, target.yo, target.getY()) + target.getBbHeight() / 2.0;
-        double tz = Mth.lerp(partialTick, target.zo, target.getZ());
-        Vec3 targetCenter = new Vec3(tx, ty, tz);
-
-        Vec3 toTarget = targetCenter.subtract(eyePos);
-
-        // Скорость вычисляется из реальной разности позиций за тик (xo/zo — позиция
-        // предыдущего тика). getDeltaMovement() на клиенте для серверных мобов почти
-        // всегда ноль: сервер шлёт только обновления позиции, не velocity-пакеты.
-        // При hurtTime > 0 кнокбэк делает дельту ненадёжной — обнуляем.
-        // Вертикаль игнорируем: наземная цель остаётся на земле.
-        Vec3 vel;
-        if (target.hurtTime > 0) {
-            vel = Vec3.ZERO;
-        } else {
-            double dvx = target.getX() - target.xo;
-            double dvz = target.getZ() - target.zo;
-            vel = new Vec3(dvx, 0.0, dvz);
-        }
-
-        double horizDist = Math.sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
-        if (horizDist < 0.5) return null;
-
-        // Итерация 1: грубая оценка времени полёта по текущей дистанции
-        int ticks0 = ArrowPhysics.flightTicks(horizDist,
-            ArrowPhysics.zeroAngle(horizDist, charge), charge);
-        if (ticks0 < 0) return null;
-
-        // Первое предсказание позиции → уточнённая горизонтальная дистанция
-        Vec3   pred0  = targetCenter.add(vel.scale(ticks0));
-        Vec3   top0   = pred0.subtract(eyePos);
-        double hDist0 = Math.max(1.0, Math.sqrt(top0.x * top0.x + top0.z * top0.z));
-
-        // Итерация 2: время полёта по предсказанной дистанции (для быстрых целей)
-        int ticks = ArrowPhysics.flightTicks(hDist0,
-            ArrowPhysics.zeroAngle(hDist0, charge), charge);
-        if (ticks < 0) ticks = ticks0; // fallback
-
-        // Финальное предсказание позиции цели
-        Vec3   predictedPos = targetCenter.add(vel.scale(ticks));
-        Vec3   toPredict    = predictedPos.subtract(eyePos);
-        double predictedLen = toPredict.length();
-        if (predictedLen < 0.01) return null;
-        double predictedHorizDist = Math.max(1.0,
-            Math.sqrt(toPredict.x * toPredict.x + toPredict.z * toPredict.z));
-
-        // Угловое направление на предсказанную позицию
-        double predYaw   = Math.toDegrees(Math.atan2(-toPredict.x, toPredict.z));
-        double predPitch = Math.toDegrees(Math.asin(Math.max(-1.0, Math.min(1.0,
-            -toPredict.y / predictedLen))));
-
-        return new AimSolution(predYaw, predPitch, horizDist, predictedHorizDist);
-    }
-
     private static void drawAutoLead(GuiGraphics g, Minecraft mc, LocalPlayer player,
                                      int cx, int cy, double pixPerRad,
                                      int zeroD, double zeroAngleDeg, float charge,
                                      float partialTick,
                                      int color, int outlineColor) {
-        if (lockedTarget == null) return;
-        LivingEntity target = lockedTarget.get();
-        if (target == null || !target.isAlive()) return;
-
-        AimSolution aim = solveAim(player, target, charge, partialTick);
+        AimSolver.Solution aim = cachedSolution;
         if (aim == null) return;
+        LivingEntity target = aim.target();
+        if (target == null || !target.isAlive()) return;
 
         float playerYaw   = Mth.lerp(partialTick, player.yRotO, player.getYRot());
         float playerPitch = Mth.lerp(partialTick, player.xRotO, player.getXRot());
 
         double dyaw   = Mth.wrapDegrees(aim.yaw() - playerYaw);
-        double dpitch = aim.pitch() - playerPitch;
-
-        // Баллистическая коррекция вертикали.
-        //
-        // Прицел (ay) находится на zeroAngleDeg НИЖЕ центра экрана.
-        // Когда игрок совмещает прицел с ромбом, его взгляд уходит на zeroAngleDeg
-        // ВЫШЕ ромба, и стрела летит под углом:
-        //   (launch_elevation) = zeroAngleDeg − dpitch_diamond
-        // Нам нужно: launch_elevation = requiredAngle(predictedHorizDist, charge).
-        // Отсюда: dpitch_diamond = zeroAngleDeg − requiredAngle(predictedHorizDist, charge).
-        // В экранных координатах: correctionDeg = zeroAngleDeg − requiredAngle(...)
-        // (положительный → ромб ВЫШЕ направления на цель, отрицательный → ниже).
-        double correctionDeg = zeroAngleDeg
-            - ArrowPhysics.zeroAngle(aim.predictedHorizDist(), charge);
+        double dpitch = aim.pitch() - playerPitch + zeroAngleDeg;
 
         int leadX = cx + (int) Math.round(Math.toRadians(dyaw) * pixPerRad);
-        int leadY = cy + (int) Math.round(
-            (Math.toRadians(dpitch) + Math.toRadians(correctionDeg)) * pixPerRad);
+        int leadY = cy + (int) Math.round(Math.toRadians(dpitch) * pixPerRad);
 
         if (leadX < 4 || leadX > cx * 2 - 4 || leadY < 4 || leadY > cy * 2 - 4) return;
 
-        drawLeadDiamond(g, leadX, leadY, color, outlineColor);
+        // Перекрытая траектория гасит метку: решение показано, но стрела упрётся в блок.
+        int markColor = aim.clear() ? color : applyAlpha(color, 0.45f);
+        drawLeadDiamond(g, leadX, leadY, markColor, outlineColor);
 
-        String label = target.getName().getString() + " " + (int) aim.horizDist() + "m";
-        g.drawString(mc.font, label, leadX + 10 + 1, leadY - 4 + 1, 0xFF000000, false);
-        g.drawString(mc.font, label, leadX + 10, leadY - 4, color, false);
-    }
+        StringBuilder label = new StringBuilder(target.getName().getString())
+            .append(' ').append((int) aim.horizDist()).append('m');
+        if (aim.lofted()) label.append(" ARC");
+        if (!aim.clear()) label.append(" BLOCKED");
 
-    private static LivingEntity findLivingTarget(Minecraft mc, LocalPlayer player) {
-        Vec3 eye  = player.getEyePosition();
-        Vec3 look = player.getLookAngle();
-        Vec3 end  = eye.add(look.scale(MAX_RANGE));
-
-        AABB   searchBox = new AABB(eye, end).inflate(4.0);
-        double bestAngle = AUTO_CONE_RAD;
-        LivingEntity closest = null;
-
-        for (Entity entity : mc.level.getEntities(player, searchBox)) {
-            if (!(entity instanceof LivingEntity living)) continue;
-            if (entity.isSpectator() || !entity.isAlive()) continue;
-
-            Vec3   center = entity.getBoundingBox().getCenter();
-            Vec3   dir    = center.subtract(eye).normalize();
-            double angle  = Math.acos(Math.max(-1.0, Math.min(1.0, dir.dot(look))));
-            if (angle < bestAngle) {
-                bestAngle = angle;
-                closest   = living;
-            }
-        }
-        return closest;
+        String text = label.toString();
+        g.drawString(mc.font, text, leadX + 10 + 1, leadY - 4 + 1, 0xFF000000, false);
+        g.drawString(mc.font, text, leadX + 10, leadY - 4, markColor, false);
     }
 
     /** Ромбовидная метка упреждения (◇). */
