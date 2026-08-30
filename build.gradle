@@ -33,6 +33,13 @@ minecraft {
     }
 }
 
+// Расширенный модуль наведения лежит вне репозитория: каталог подключается к сборке, только
+// если он есть на этой машине. У всех остальных мод собирается без него — с базовым модулем.
+def extendedAim = file('src/private/java')
+if (extendedAim.isDirectory()) {
+    sourceSets.main.java.srcDir extendedAim
+}
+
 repositories {
     mavenCentral()
 }

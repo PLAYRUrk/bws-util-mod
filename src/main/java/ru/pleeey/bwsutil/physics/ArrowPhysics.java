@@ -131,6 +131,21 @@ public final class ArrowPhysics {
     }
 
     /**
+     * Точный вариант {@link #solveElevations} — мимо кэша и без квантования аргументов.
+     *
+     * <p>Кэш округляет дистанцию до 0.5 блока, а перепад высот — до 0.25; на тридцати блоках это
+     * около половины градуса, и решение меняется ступеньками, которые видны и как дрожь метки
+     * упреждения, и как микрорывки камеры. Перебор кандидатов такую точность не окупает, а один
+     * пересчёт для уже выбранной точки стоит копейки — поэтому кэш остаётся для поиска, а
+     * итоговый угол считается здесь.</p>
+     */
+    public static double[] solveElevationsExact(double horizDist, double dy, double power) {
+        if (horizDist <= 0.0 || power <= 0.0) return new double[] { Double.NaN, Double.NaN };
+        return computeElevations(horizDist,
+            Math.max(-DY_LIMIT, Math.min(DY_LIMIT, dy)), power);
+    }
+
+    /**
      * Sweeps the whole usable elevation range and bisects every sign change of
      * {@code heightAt(angle) - dy}.
      *

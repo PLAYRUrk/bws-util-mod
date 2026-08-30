@@ -1,5 +1,7 @@
 package ru.pleeey.bwsutil.client.screen;
 
+import ru.pleeey.bwsutil.client.aim.AimModules;
+import net.minecraft.client.gui.components.AbstractWidget;
 import ru.pleeey.bwsutil.config.ScopeConfig;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractSliderButton;
@@ -56,10 +58,12 @@ public class ScopeConfigScreen extends Screen {
             ScopeConfig.SHOW_RANGEFINDER::get, ScopeConfig.SHOW_RANGEFINDER::set));
         addRenderableWidget(toggleButton(leftX, tY + row * 3, colW, "Show charge bar",
             ScopeConfig.SHOW_CHARGE_BAR::get, ScopeConfig.SHOW_CHARGE_BAR::set));
-        addRenderableWidget(toggleButton(leftX, tY + row * 4, colW, "Auto-aim (AUTO mode)",
-            ScopeConfig.AUTO_AIM_ENABLED::get, ScopeConfig.AUTO_AIM_ENABLED::set));
-        addRenderableWidget(new RangeSlider(leftX, tY + row * 5, colW, 20,
-            "Auto-aim strength", ScopeConfig.AUTO_AIM_STRENGTH, 5, 100));
+        // Модуль наведения сам решает, есть ли у него что показывать: в базовой сборке
+        // настраивать нечего, и строки просто остаются пустыми.
+        for (AbstractWidget widget :
+                AimModules.get().settingsWidgets(this, leftX, tY + row * 4, colW, row)) {
+            addRenderableWidget(widget);
+        }
 
         int rY = startY + 16;
         addRenderableWidget(toggleButton(rightX, rY, colW, "Fireball Threat",

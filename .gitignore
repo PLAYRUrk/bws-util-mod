@@ -29,3 +29,6 @@ forge*changelog.txt
 # runtime logs
 *.log
 logs
+
+# private sources (not distributed)
+src/private/
